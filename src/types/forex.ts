@@ -13,10 +13,10 @@ export interface SymbolSpec {
   spreadPips: number;
   bid: number;
   ask: number;
-  swapLong: number; // in points or USD/lot
+  swapLong: number; // in USD or points per lot/day
   swapShort: number;
   currency: string;
-  pipValuePerLotUSD: number; // e.g. 10 for EURUSD, dynamic for USDJPY, 100 for XAUUSD
+  pipValuePerLotUSD: number; // $10 for EUR/USD, dynamic for USD/JPY, $100 for XAU/USD
 }
 
 export interface Candle {
@@ -29,12 +29,33 @@ export interface Candle {
   spread: number; // in pips
 }
 
-export interface Tick {
-  time: number; // in milliseconds
-  bid: number;
-  ask: number;
-  spread: number;
-  volume: number;
+export type ProvenanceType = 'MT5_BRIDGE' | 'USER_CSV' | 'SIMULATED';
+
+export interface DataProvenance {
+  source: ProvenanceType;
+  label: 'MT5 BRIDGE' | 'USER CSV' | 'SIMULATED';
+  details: string;
+  brokerServer?: string;
+  accountType?: 'DEMO' | 'REAL';
+  fileName?: string;
+  importDate?: string;
+  utcOffsetHours: number;
+  isResearchEligible: boolean;
+}
+
+export interface DatasetRecord {
+  id: string;
+  symbol: SymbolName;
+  timeframe: Timeframe;
+  year?: number;
+  rowCount: number;
+  fileSizeKB: number;
+  firstDate: string;
+  lastDate: string;
+  provenance: DataProvenance;
+  candles: Candle[];
+  qualityScore: number;
+  lastUpdated: string;
 }
 
 export type AccountMode = 'DEMO' | 'LIVE';
@@ -43,10 +64,10 @@ export interface BrokerAccount {
   id: string;
   label: string;
   broker: 'Exness';
-  server: string;
-  login: string;
+  server: string; // e.g. "Exness-MT5Trial9"
+  login: string;  // e.g. "50192834"
   mode: AccountMode;
-  symbolSuffix: string; // e.g. "m" for Exness standard accounts (EURUSDm)
+  symbolSuffix: string; // "m" for Standard
   balance: number;
   equity: number;
   margin: number;
@@ -56,6 +77,7 @@ export interface BrokerAccount {
   isConnected: boolean;
   isSimulated: boolean;
   lastHeartbeat: string;
+  utcOffsetHours: number;
 }
 
 export interface Position {
@@ -101,12 +123,39 @@ export interface StrategyParamSchema {
   description: string;
 }
 
+export interface StrategyInitContext {
+  warmupPeriod: number;
+  params: Record<string, any>;
+}
+
+export interface StrategyExecutionContext {
+  data: Candle[];
+  currentBar: Candle;
+  barIndex: number;
+  openPositions: Position[];
+  accountBalance: number;
+  accountEquity: number;
+  params: Record<string, any>;
+  buy: (size?: number, sl?: number, tp?: number, comment?: string) => void;
+  sell: (size?: number, sl?: number, tp?: number, comment?: string) => void;
+  close: (ticket?: number) => void;
+  modify: (ticket: number, sl?: number, tp?: number) => void;
+}
+
+export interface StrategyContract {
+  name: string;
+  version: string;
+  paramsSchema: StrategyParamSchema[];
+  init: (ctx: StrategyInitContext) => void;
+  onBar: (ctx: StrategyExecutionContext, bar: Candle) => void;
+}
+
 export interface Strategy {
   id: string;
   name: string;
   description: string;
-  sourceType: 'python' | 'pine_converted' | 'nocode';
-  code: string;
+  sourceType: 'typescript' | 'pine_converted';
+  code: string; // Runnable TypeScript strategy conforming to StrategyContract
   pineSource?: string;
   paramsSchema: StrategyParamSchema[];
   params: Record<string, any>;
@@ -123,7 +172,7 @@ export interface CostModel {
   spreadMode: 'fixed' | 'historical';
   fixedSpreadPips: number;
   commissionPerLotRoundTurn: number; // e.g. $7 per lot
-  slippagePips: number; // average slippage
+  slippagePips: number;
   includeSwap: boolean;
 }
 
@@ -140,6 +189,7 @@ export interface BacktestConfig {
   riskPctPerTrade: number;
   costModel: CostModel;
   params: Record<string, any>;
+  provenance: DataProvenance;
 }
 
 export interface BacktestTrade {
@@ -148,12 +198,12 @@ export interface BacktestTrade {
   exitTime: number;
   symbol: SymbolName;
   direction: 'BUY' | 'SELL';
-  size: number; // lots
+  size: number;
   entryPrice: number;
   exitPrice: number;
   sl?: number;
   tp?: number;
-  pnl: number; // net USD
+  pnl: number;
   pips: number;
   durationMinutes: number;
   costs: {
@@ -162,19 +212,19 @@ export interface BacktestTrade {
     swap: number;
     slippage: number;
   };
-  mae: number; // Maximum Adverse Excursion in pips
-  mfe: number; // Maximum Favorable Excursion in pips
+  mae: number;
+  mfe: number;
   exitReason: 'TP' | 'SL' | 'SIGNAL' | 'END_OF_DATA';
 }
 
 export interface MonthlyReturn {
   year: number;
-  months: Record<number, number>; // month index 0-11 -> return %
+  months: Record<number, number>;
   totalYearReturn: number;
 }
 
 export interface MonteCarloConfidence {
-  percentile: number; // 95, 99
+  percentile: number;
   maxDrawdownPct: number;
   finalEquity: number;
 }
@@ -186,13 +236,14 @@ export interface BacktestResult {
   symbol: SymbolName;
   timeframe: Timeframe;
   period: string;
+  barCount: number;
+  provenance: DataProvenance;
   initialBalance: number;
   finalBalance: number;
   netProfit: number;
   returnPct: number;
   cagr: number;
-  
-  // Performance
+
   profitFactor: number;
   expectancy: number;
   winRate: number;
@@ -209,7 +260,6 @@ export interface BacktestResult {
   tradesPerMonth: number;
   exposureTimePct: number;
 
-  // Risk
   sharpeRatio: number;
   sortinoRatio: number;
   calmarRatio: number;
@@ -221,18 +271,16 @@ export interface BacktestResult {
   ulcerIndex: number;
   valueAtRisk95: number;
 
-  // Costs
   totalSpreadCost: number;
   totalCommission: number;
   totalSwap: number;
   totalSlippageCost: number;
 
-  // Data & Arrays
   equityCurve: { time: number; equity: number; drawdownPct: number; balance: number }[];
   trades: BacktestTrade[];
   monthlyReturns: MonthlyReturn[];
   monteCarlo: MonteCarloConfidence[];
-  overfittingWarningScore: number; // 0 to 100
+  overfittingWarningScore: number;
   overfittingNotes: string[];
   aiSummary?: string;
   createdAt: string;
@@ -305,12 +353,12 @@ export interface JournalEntry {
   pnl: number;
   tags: string[];
   notes: string;
-  rating: number; // 1-5
+  rating: number;
   createdAt: string;
 }
 
 export interface PineConversionResponse {
-  pythonCode: string;
+  typescriptCode: string;
   detectedParams: StrategyParamSchema[];
   warnings: string[];
   lookaheadDetected: boolean;

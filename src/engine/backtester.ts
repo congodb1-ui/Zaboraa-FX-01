@@ -519,7 +519,17 @@ export function runBacktest(
     strategyName: config.strategyId,
     symbol: config.symbol,
     timeframe: config.timeframe,
-    period: `${new Date(candles[0].time * 1000).toISOString().split('T')[0]} to ${new Date(candles[candles.length - 1].time * 1000).toISOString().split('T')[0]}`,
+    period: candles.length > 0
+      ? `${new Date(candles[0].time * 1000).toISOString().split('T')[0]} to ${new Date(candles[candles.length - 1].time * 1000).toISOString().split('T')[0]}`
+      : 'N/A',
+    barCount: candles.length,
+    provenance: config.provenance || {
+      source: 'SIMULATED',
+      label: 'SIMULATED',
+      details: 'Diagnostic engine run',
+      utcOffsetHours: 0,
+      isResearchEligible: false,
+    },
     initialBalance: config.initialBalance,
     finalBalance: Number(balance.toFixed(2)),
     netProfit: Number(netProfit.toFixed(2)),

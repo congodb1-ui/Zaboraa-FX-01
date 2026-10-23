@@ -25,13 +25,13 @@ const ai = new GoogleGenAI({
   },
 });
 
-// Mock broker state
+// Demo account state
 let brokerState = {
   isConnected: true,
   isSimulated: true,
   broker: 'Exness',
-  server: 'Exness-Real21',
-  login: '88419204',
+  server: 'Exness-MT5Trial9',
+  login: '50192834',
   mode: 'DEMO',
   symbolSuffix: 'm',
   balance: 10000.0,
@@ -39,6 +39,7 @@ let brokerState = {
   margin: 0.0,
   freeMargin: 10000.0,
   leverage: 200,
+  utcOffsetHours: 2, // Exness server offset (EET/EEST)
   lastHeartbeat: new Date().toISOString(),
 };
 
@@ -49,6 +50,8 @@ app.get('/api/health', (req, res) => {
     app: 'Zaboraa FX',
     timestamp: new Date().toISOString(),
     brokerStatus: brokerState.isConnected ? 'ONLINE' : 'OFFLINE',
+    server: brokerState.server,
+    accountType: 'DEMO',
   });
 });
 
@@ -62,7 +65,7 @@ app.get('/api/broker/status', (req, res) => {
 
 // Broker connect/test endpoint
 app.post('/api/broker/connect', (req, res) => {
-  const { login, server, password, symbolSuffix, mode } = req.body;
+  const { login, server, symbolSuffix, mode } = req.body;
   if (!login || !server) {
     return res.status(400).json({ error: 'Login and server name are required' });
   }
@@ -84,7 +87,7 @@ app.post('/api/broker/connect', (req, res) => {
   });
 });
 
-// Pine Script to Python Conversion via Gemini 3.8 Flash
+// Pine Script to TypeScript Conversion via Gemini 3.8 Flash
 app.post('/api/pine/convert', async (req, res) => {
   try {
     const { pineCode, scriptTitle, userNotes } = req.body;
@@ -93,33 +96,36 @@ app.post('/api/pine/convert', async (req, res) => {
       return res.status(400).json({ error: 'Pine Script code is required' });
     }
 
-    const systemPrompt = `You are a world-class Quantitative Trading Software Architect specializing in translating TradingView Pine Script (v4, v5, v6) into production-grade Python strategies.
-The generated Python code MUST adhere to the following Zaboraa FX Strategy Interface contract:
+    const systemPrompt = `You are an institutional FX Quantitative Software Architect specializing in translating TradingView Pine Script (v4, v5, v6) into production-grade TypeScript strategies.
+The generated TypeScript code MUST adhere to the following Zaboraa FX TypeScript Strategy Contract:
 
-class ConvertedStrategy:
-    def __init__(self):
-        self.name = "Strategy Name"
-        self.version = "1.0.0"
-
-    def init(self, ctx):
-        ctx.warmup_period = 20  # Minimum bars needed for indicator warmup
-
-    def on_bar(self, ctx, bar):
-        # Access historical closed bars via ctx.data (guaranteed no lookahead)
-        # Execute orders:
-        #   ctx.buy(size=0.1, sl=..., tp=..., comment="...")
-        #   ctx.sell(size=0.1, sl=..., tp=..., comment="...")
-        #   ctx.close()
-        #   ctx.modify(ticket, sl=..., tp=...)
-        pass
+export const strategy = {
+  name: "Strategy Name",
+  version: "1.0.0",
+  paramsSchema: [
+    { name: "param1", type: "number", default: 14, description: "Parameter description" }
+  ],
+  init(ctx) {
+    ctx.warmupPeriod = 20;
+  },
+  onBar(ctx, bar) {
+    // Access historical closed bars via ctx.data (guaranteed closed bars, no lookahead)
+    // Execution methods:
+    //   ctx.buy(size, sl, tp, comment)
+    //   ctx.sell(size, sl, tp, comment)
+    //   ctx.close(ticket)
+    //   ctx.modify(ticket, sl, tp)
+  }
+};
 
 Rules:
-1. Detect lookahead / repainting hazards: 'request.security' with 'lookahead=barmerge.lookahead_on', 'barstate.isconfirmed' misunderstandings, or dynamic repainting functions.
-2. Extract all 'input.*' variables into a clean parameters schema.
-3. Map technical built-ins (ta.sma, ta.ema, ta.rsi, ta.atr, ta.crossover, ta.crossunder) into Python/numpy equivalents.
-4. Return a structured JSON response matching the required schema.`;
+1. Output valid TypeScript only. Do not use 'window', 'document', 'fetch', or 'eval'.
+2. Flag lookahead hazards (request.security with lookahead=barmerge.lookahead_on) and repainting.
+3. Map technical built-ins (ta.sma, ta.ema, ta.rsi, ta.atr, ta.crossover) into clean TypeScript math.
+4. Extract all input.* parameters into paramsSchema.
+5. Return a structured JSON response matching the schema.`;
 
-    const userPrompt = `Convert the following TradingView Pine Script into Python for Zaboraa FX:
+    const userPrompt = `Translate the following TradingView Pine Script into a TypeScript StrategyContract for Zaboraa FX:
 Script Title: ${scriptTitle || 'Untitled Strategy'}
 User Notes: ${userNotes || 'None'}
 
@@ -137,9 +143,9 @@ ${pineCode}
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            pythonCode: {
+            typescriptCode: {
               type: Type.STRING,
-              description: 'The complete runnable Python strategy class code.',
+              description: 'The complete runnable TypeScript strategy code conforming to StrategyContract.',
             },
             detectedParams: {
               type: Type.ARRAY,
@@ -157,22 +163,22 @@ ${pineCode}
             warnings: {
               type: Type.ARRAY,
               items: { type: Type.STRING },
-              description: 'List of detected warnings (unsupported constructs, repainting risks, lookahead, execution difference notes).',
+              description: 'Warnings for lookahead, repainting, or execution differences.',
             },
             lookaheadDetected: {
               type: Type.BOOLEAN,
-              description: 'True if request.security lookahead or future-data access was detected.',
+              description: 'True if request.security lookahead was detected.',
             },
             repaintingDetected: {
               type: Type.BOOLEAN,
-              description: 'True if repainting functions or intrabar unconfirmed bar states are relied upon.',
+              description: 'True if repainting logic is used.',
             },
             explanation: {
               type: Type.STRING,
-              description: 'Clear, concise summary of the strategy conversion, logic translated, and recommended backtest settings.',
+              description: 'Clear explanation of translated logic.',
             },
           },
-          required: ['pythonCode', 'detectedParams', 'warnings', 'lookaheadDetected', 'repaintingDetected', 'explanation'],
+          required: ['typescriptCode', 'detectedParams', 'warnings', 'lookaheadDetected', 'repaintingDetected', 'explanation'],
         },
       },
     });
@@ -191,9 +197,10 @@ ${pineCode}
 // Strategy & Backtest Audit / Natural-Language Insights via Gemini
 app.post('/api/pine/analyze', async (req, res) => {
   try {
-    const { backtestMetrics, strategyName, symbol, timeframe } = req.body;
+    const { backtestMetrics, strategyName, symbol, timeframe, provenance } = req.body;
 
     const prompt = `Analyze this automated forex strategy backtest for ${strategyName} on ${symbol} (${timeframe}):
+Data Source: ${provenance?.label || 'UNSPECIFIED'} (${provenance?.details || 'N/A'})
 Metrics:
 - Net Profit: $${backtestMetrics.netProfit} (${backtestMetrics.returnPct}%)
 - Profit Factor: ${backtestMetrics.profitFactor}
@@ -202,19 +209,18 @@ Metrics:
 - Max Drawdown: ${backtestMetrics.maxDrawdownPct}% ($${backtestMetrics.maxDrawdownAmount})
 - Sharpe Ratio: ${backtestMetrics.sharpeRatio}
 - Sortino Ratio: ${backtestMetrics.sortinoRatio}
-- Payoff Ratio: ${backtestMetrics.payoffRatio}
 - Overfitting Score: ${backtestMetrics.overfittingWarningScore}/100
 
 Provide a professional, concise quantitative critique highlighting:
 1. Core Strengths
-2. Primary Vulnerabilities (Slippage, Spread Widening, Regime Changes)
-3. Actionable Advice before deploying to Exness Live`;
+2. Primary Vulnerabilities
+3. Actionable Advice before deploying to Exness Demo or Live`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.8-flash',
       contents: prompt,
       config: {
-        systemInstruction: 'You are an institutional FX Risk Officer and Quantitative Strategist. Be concise, realistic, and prioritize downside risk protection.',
+        systemInstruction: 'You are an institutional FX Risk Officer and Quantitative Strategist. Be concise, realistic, and emphasize data provenance integrity.',
       },
     });
 
@@ -233,9 +239,6 @@ app.post('/api/kill-switch', (req, res) => {
   res.json({
     success: true,
     action: 'EMERGENCY_HALT',
-    closedPositionsCount: 4,
-    cancelledOrdersCount: 2,
-    haltedBotsCount: 3,
     timestamp: new Date().toISOString(),
     message: 'Global Kill Switch engaged. All active market positions liquidated and all automated bots stopped.',
   });

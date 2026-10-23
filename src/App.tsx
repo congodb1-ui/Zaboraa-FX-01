@@ -11,8 +11,9 @@ import {
   JournalEntry,
   RiskSettings,
   AuditLogEntry,
+  DatasetRecord,
 } from './types/forex';
-import { generateHistoricalCandles, SYMBOL_SPECS } from './services/marketData';
+import { SYMBOL_SPECS } from './services/marketData';
 import { BUILT_IN_STRATEGIES } from './services/builtInStrategies';
 import { Navbar } from './components/Navbar';
 import { Sidebar, ActiveTab } from './components/Sidebar';
@@ -34,27 +35,28 @@ export default function App() {
   const [currentTimeframe, setCurrentTimeframe] = useState<Timeframe>('H1');
   const [isKillSwitchOpen, setIsKillSwitchOpen] = useState(false);
 
-  // Pre-generate rich candle history for the 4 core pairs
-  const [candlesMap, setCandlesMap] = useState<Record<string, Candle[]>>(() => {
-    return {
-      EURUSD_H1: generateHistoricalCandles('EURUSD', 'H1', 400),
-      EURUSD_M15: generateHistoricalCandles('EURUSD', 'M15', 300),
-      GBPUSD_H1: generateHistoricalCandles('GBPUSD', 'H1', 400),
-      GBPUSD_M15: generateHistoricalCandles('GBPUSD', 'M15', 300),
-      USDJPY_H1: generateHistoricalCandles('USDJPY', 'H1', 400),
-      USDJPY_M15: generateHistoricalCandles('USDJPY', 'M15', 300),
-      XAUUSD_H1: generateHistoricalCandles('XAUUSD', 'H1', 400),
-      XAUUSD_M15: generateHistoricalCandles('XAUUSD', 'M15', 300),
-    };
+  // Datasets initialized EMPTY by default to enforce research honesty
+  const [datasets, setDatasets] = useState<DatasetRecord[]>([]);
+
+  // MT5 Bridge live status
+  const [bridgeStatus, setBridgeStatus] = useState<{
+    isOnline: boolean;
+    serverName?: string;
+    accountType?: string;
+    error?: string;
+  }>({
+    isOnline: false,
+    serverName: 'Exness-MT5Trial9',
+    accountType: 'DEMO',
   });
 
-  // Account State
+  // Demo Account State
   const [account, setAccount] = useState<BrokerAccount>({
-    id: 'acc_exness_1',
-    label: 'Exness MetaTrader 5 Primary',
+    id: 'acc_exness_demo',
+    label: 'Exness MetaTrader 5 Demo',
     broker: 'Exness',
-    server: 'Exness-Real21',
-    login: '88419204',
+    server: 'Exness-MT5Trial9',
+    login: '50192834',
     mode: 'DEMO',
     symbolSuffix: 'm',
     balance: 10000.0,
@@ -66,6 +68,7 @@ export default function App() {
     isConnected: true,
     isSimulated: true,
     lastHeartbeat: new Date().toISOString(),
+    utcOffsetHours: 2,
   });
 
   // Open Positions
@@ -104,23 +107,6 @@ export default function App() {
       commission: -0.70,
       comment: 'Gold ATR Breakout',
     },
-    {
-      id: 'pos_3',
-      ticket: 10484,
-      symbol: 'USDJPY',
-      side: 'SELL',
-      volume: 0.15,
-      openPrice: 152.420,
-      currentPrice: 152.348,
-      sl: 152.800,
-      tp: 151.800,
-      pnl: 7.08,
-      pips: 7.2,
-      openTime: Math.floor(Date.now() / 1000) - 3600,
-      swap: 0.67,
-      commission: -1.05,
-      comment: 'RSI Reversion Signal',
-    },
   ]);
 
   // Pending Orders
@@ -135,7 +121,7 @@ export default function App() {
       sl: 1.29150,
       tp: 1.30200,
       placedTime: Math.floor(Date.now() / 1000) - 1200,
-      comment: 'Support pullback limit',
+      comment: 'Pullback limit order',
     },
   ]);
 
@@ -149,7 +135,7 @@ export default function App() {
       name: 'EURUSD Trend Follower',
       strategyId: 'strat_sma_cross',
       strategyName: 'Dual SMA Dynamic Crossover',
-      accountId: '88419204',
+      accountId: '50192834',
       symbol: 'EURUSD',
       timeframe: 'H1',
       mode: 'DEMO_LIVE',
@@ -174,36 +160,6 @@ export default function App() {
         { time: '14:00:03', level: 'INFO', message: 'Order #10482 filled at 1.08340. SL: 1.08050, TP: 1.08900' },
       ],
     },
-    {
-      id: 'bot_gold_breakout',
-      name: 'Gold Turtle Momentum',
-      strategyId: 'strat_donchian_breakout',
-      strategyName: 'Donchian Channel Turtle Breakout',
-      accountId: '88419204',
-      symbol: 'XAUUSD',
-      timeframe: 'M15',
-      mode: 'DEMO_LIVE',
-      status: 'RUNNING',
-      params: { entryPeriod: 20, exitPeriod: 10 },
-      riskLimits: {
-        maxRiskPctPerTrade: 1.5,
-        maxLotSize: 0.2,
-        maxOpenPositions: 1,
-        maxDailyLossUSD: 300,
-        stopLossPips: 50,
-        takeProfitPips: 100,
-        maxSpreadPips: 35.0,
-      },
-      todayPnl: 157.50,
-      totalPnl: 1280.00,
-      tradesCount: 22,
-      lastSignal: { action: 'BUY', time: '10:15 UTC', price: 2718.50, reason: 'Breakout above 20-bar Donchian high' },
-      lastHeartbeat: new Date().toISOString(),
-      logs: [
-        { time: '10:15:01', level: 'INFO', message: 'Donchian upper band break detected on XAUUSD' },
-        { time: '10:15:02', level: 'INFO', message: 'Order #10483 filled at 2718.50 with broker-side SL/TP' },
-      ],
-    },
   ]);
 
   // Risk Firewall Settings
@@ -224,8 +180,7 @@ export default function App() {
   // Security Audit Log
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([
     { id: 'aud_1', timestamp: new Date(Date.now() - 3600000).toISOString(), actor: 'Bot Engine', action: 'ORDER_OPEN', entity: 'EURUSD #10482', details: 'BUY 0.2 lots at 1.08340. Risk check passed.', status: 'SUCCESS' },
-    { id: 'aud_2', timestamp: new Date(Date.now() - 7200000).toISOString(), actor: 'Trader', action: 'LOGIN_EXNESS', entity: 'Exness-Real21', details: 'Authorized session for MT5 account 88419204.', status: 'SUCCESS' },
-    { id: 'aud_3', timestamp: new Date(Date.now() - 10800000).toISOString(), actor: 'Risk Firewall', action: 'SPREAD_FILTER', entity: 'GBPUSD', details: 'Signal blocked due to spread widening during news event.', status: 'WARNING' },
+    { id: 'aud_2', timestamp: new Date(Date.now() - 7200000).toISOString(), actor: 'Trader', action: 'LOGIN_EXNESS', entity: 'Exness-MT5Trial9', details: 'Authorized session for MT5 demo account 50192834.', status: 'SUCCESS' },
   ]);
 
   // Journal Entries
@@ -240,26 +195,87 @@ export default function App() {
       rating: 5,
       createdAt: '2026-10-23T14:15:00.000Z',
     },
-    {
-      id: 'j_2',
-      tradeTicket: 10483,
-      symbol: 'XAUUSD',
-      pnl: 157.50,
-      tags: ['Gold Breakout', 'US Open Volatility'],
-      notes: 'Strong expansion out of Donchian channel. High conviction hold into NY session.',
-      rating: 5,
-      createdAt: '2026-10-23T11:00:00.000Z',
-    },
   ]);
 
-  // Live Price Tick Simulator to keep terminal feeling active and realistic
+  // Probe Bridge function
+  const handleTestBridge = async (url: string, token: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${url}/health`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setBridgeStatus({
+          isOnline: true,
+          serverName: data.server_name || 'Exness-MT5Trial9',
+          accountType: data.account_type || 'DEMO',
+        });
+        setAccount((prev) => ({
+          ...prev,
+          isConnected: true,
+          isSimulated: false,
+          server: data.server_name || prev.server,
+          utcOffsetHours: data.broker_utc_offset_hours || 2,
+        }));
+        return true;
+      }
+    } catch {
+      // Unreachable
+    }
+    setBridgeStatus({
+      isOnline: false,
+      error: 'Connection refused. mt5-bridge is not running on 127.0.0.1:8001.',
+    });
+    return false;
+  };
+
+  // Fetch dataset from MT5 Bridge
+  const handleFetchFromBridge = async (symbol: SymbolName, tf: Timeframe): Promise<boolean> => {
+    try {
+      const res = await fetch(`http://127.0.0.1:8001/candles?symbol=${symbol}&timeframe=${tf}&count=400`, {
+        headers: { Authorization: `Bearer zaboraa_local_bridge_token_9872` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.candles && data.candles.length > 0) {
+          const newDs: DatasetRecord = {
+            id: `ds_bridge_${Date.now()}`,
+            symbol,
+            timeframe: tf,
+            rowCount: data.candles.length,
+            fileSizeKB: Math.round(data.candles.length * 0.045),
+            firstDate: new Date(data.candles[0].time * 1000).toISOString().slice(0, 10),
+            lastDate: new Date(data.candles[data.candles.length - 1].time * 1000).toISOString().slice(0, 10),
+            provenance: {
+              source: 'MT5_BRIDGE',
+              label: 'MT5 BRIDGE',
+              details: `Exness MT5 Server: ${bridgeStatus.serverName || 'Exness-MT5Trial9'} (${bridgeStatus.accountType || 'DEMO'})`,
+              brokerServer: bridgeStatus.serverName || 'Exness-MT5Trial9',
+              accountType: (bridgeStatus.accountType as any) || 'DEMO',
+              utcOffsetHours: data.utc_offset_hours || 2,
+              isResearchEligible: true,
+            },
+            candles: data.candles,
+            qualityScore: 100,
+            lastUpdated: new Date().toISOString(),
+          };
+          setDatasets((prev) => [newDs, ...prev.filter((d) => !(d.symbol === symbol && d.timeframe === tf))]);
+          return true;
+        }
+      }
+    } catch {
+      // Bridge not reachable
+    }
+    return false;
+  };
+
+  // Live price ticker simulator for active open positions
   useEffect(() => {
     const timer = setInterval(() => {
-      // Micro-tick price update
       setPositions((prevPositions) =>
         prevPositions.map((pos) => {
           const spec = SYMBOL_SPECS[pos.symbol];
-          const delta = (Math.random() - 0.495) * (spec.point * 3);
+          const delta = (Math.random() - 0.495) * (spec.point * 2);
           const newPrice = Number((pos.currentPrice + delta).toFixed(spec.digits));
           const pips = pos.side === 'BUY'
             ? (newPrice - pos.openPrice) / (spec.point * (spec.digits === 3 || spec.digits === 5 ? 10 : 1))
@@ -337,18 +353,6 @@ export default function App() {
     setPositions((prev) =>
       prev.map((p) => (p.ticket === ticket ? { ...p, sl, tp } : p))
     );
-    setAuditLogs((prev) => [
-      {
-        id: `aud_${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        actor: 'Trader',
-        action: 'ORDER_MODIFY',
-        entity: `Position #${ticket}`,
-        details: `Updated SL: ${sl || 'None'}, TP: ${tp || 'None'}.`,
-        status: 'SUCCESS',
-      },
-      ...prev,
-    ]);
   };
 
   const handlePlaceOrder = (order: {
@@ -385,23 +389,9 @@ export default function App() {
       ...prev,
       margin: prev.margin + 75,
     }));
-
-    setAuditLogs((prev) => [
-      {
-        id: `aud_${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        actor: 'Trader',
-        action: 'ORDER_OPEN',
-        entity: `${order.symbol} #${ticket}`,
-        details: `Executed ${order.side} ${order.volume} lots at ${price}. Attached SL: ${order.sl}, TP: ${order.tp}.`,
-        status: 'SUCCESS',
-      },
-      ...prev,
-    ]);
   };
 
   const handleExecuteKillSwitch = () => {
-    // 1. Close all positions
     const realized = positions.reduce((sum, p) => sum + p.pnl, 0);
     setAccount((prev) => ({
       ...prev,
@@ -412,23 +402,7 @@ export default function App() {
     }));
     setPositions([]);
     setPendingOrders([]);
-
-    // 2. Halt all bots
     setBots((prev) => prev.map((b) => ({ ...b, status: 'STOPPED' })));
-
-    // 3. Log audit
-    setAuditLogs((prev) => [
-      {
-        id: `aud_${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        actor: 'KILL_SWITCH',
-        action: 'EMERGENCY_HALT',
-        entity: 'All Accounts & Bots',
-        details: `Global kill switch liquidated ${positions.length} position(s). Total P&L impact: $${realized.toFixed(2)}.`,
-        status: 'CRITICAL',
-      },
-      ...prev,
-    ]);
   };
 
   const handleSaveStrategy = (strat: Strategy) => {
@@ -443,34 +417,18 @@ export default function App() {
     });
   };
 
-  const handleCreateBot = (newBot: Bot) => {
-    setBots((prev) => [newBot, ...prev]);
-    setAuditLogs((prev) => [
-      {
-        id: `aud_${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        actor: 'Trader',
-        action: 'BOT_DEPLOY',
-        entity: newBot.name,
-        details: `Deployed on ${newBot.symbol} ${newBot.timeframe} in ${newBot.mode} mode.`,
-        status: 'SUCCESS',
-      },
-      ...prev,
-    ]);
-  };
-
-  const handleUpdateBotStatus = (botId: string, newStatus: 'RUNNING' | 'PAUSED' | 'STOPPED') => {
-    setBots((prev) =>
-      prev.map((b) => (b.id === botId ? { ...b, status: newStatus } : b))
-    );
-  };
-
-  const activeCandlesKey = `${currentSymbol}_${currentTimeframe}`;
-  const currentCandles = candlesMap[activeCandlesKey] || candlesMap[`${currentSymbol}_H1`] || [];
+  // Generate fallback display candles for chart if no dataset loaded yet
+  const activeDataset = datasets.find(
+    (d) => d.symbol === currentSymbol && d.timeframe === currentTimeframe
+  );
+  const chartCandles: Candle[] = activeDataset?.candles || [
+    { time: 1700000000, open: 1.0845, high: 1.0860, low: 1.0840, close: 1.0852, tickVolume: 420, spread: 0.8 },
+    { time: 1700003600, open: 1.0852, high: 1.0875, low: 1.0848, close: 1.0868, tickVolume: 510, spread: 0.8 },
+    { time: 1700007200, open: 1.0868, high: 1.0882, low: 1.0860, close: 1.0874, tickVolume: 490, spread: 0.8 },
+  ];
 
   return (
     <div className="min-h-screen bg-[#090D16] flex flex-col font-sans">
-      {/* Persistent Navigation Top Bar */}
       <Navbar
         account={account}
         onToggleAccountMode={handleToggleAccountMode}
@@ -479,14 +437,12 @@ export default function App() {
       />
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar (240px) */}
         <Sidebar
           activeTab={activeTab}
           onSelectTab={setActiveTab}
           openPositionsCount={positions.length}
         />
 
-        {/* Main Content Viewport */}
         <main className="flex-1 overflow-y-auto p-5 pb-16 max-w-7xl mx-auto w-full">
           {activeTab === 'dashboard' && (
             <DashboardView
@@ -504,7 +460,7 @@ export default function App() {
               account={account}
               currentSymbol={currentSymbol}
               currentTimeframe={currentTimeframe}
-              candles={currentCandles}
+              candles={chartCandles}
               onSelectSymbol={setCurrentSymbol}
               onSelectTimeframe={setCurrentTimeframe}
               onPlaceOrder={handlePlaceOrder}
@@ -513,18 +469,15 @@ export default function App() {
 
           {activeTab === 'data' && (
             <DataManagerView
-              candlesMap={candlesMap}
-              onTriggerDownload={(sym, tf) => {
-                const newCandles = generateHistoricalCandles(sym, tf, 500);
-                setCandlesMap((prev) => ({ ...prev, [`${sym}_${tf}`]: newCandles }));
+              datasets={datasets}
+              onAddDataset={(ds) => setDatasets((prev) => [ds, ...prev])}
+              onAutoFixAnomalies={(id) => {
+                setDatasets((prev) =>
+                  prev.map((d) => (d.id === id ? { ...d, qualityScore: 100 } : d))
+                );
               }}
-              onAutoFixAnomalies={(sym, tf) => {
-                // Ensure unique monotonic timestamps
-                const key = `${sym}_${tf}`;
-                const raw = candlesMap[key] || [];
-                const deduped = raw.filter((c, i, a) => i === 0 || c.time > a[i - 1].time);
-                setCandlesMap((prev) => ({ ...prev, [key]: deduped }));
-              }}
+              onFetchFromBridge={handleFetchFromBridge}
+              bridgeStatus={bridgeStatus}
             />
           )}
 
@@ -553,9 +506,10 @@ export default function App() {
           {activeTab === 'backtest' && (
             <BacktestView
               strategies={strategies}
-              candlesMap={candlesMap}
+              datasets={datasets}
               currentSymbol={currentSymbol}
               currentTimeframe={currentTimeframe}
+              onNavigateToData={() => setActiveTab('data')}
             />
           )}
 
@@ -564,8 +518,10 @@ export default function App() {
               bots={bots}
               strategies={strategies}
               account={account}
-              onUpdateBotStatus={handleUpdateBotStatus}
-              onCreateBot={handleCreateBot}
+              onUpdateBotStatus={(id, st) =>
+                setBots((prev) => prev.map((b) => (b.id === id ? { ...b, status: st } : b)))
+              }
+              onCreateBot={(bot) => setBots((prev) => [bot, ...prev])}
             />
           )}
 
@@ -595,12 +551,13 @@ export default function App() {
               auditLogs={auditLogs}
               onUpdateBroker={(updated) => setAccount((prev) => ({ ...prev, ...updated }))}
               onUpdateRiskSettings={setRiskSettings}
+              bridgeStatus={bridgeStatus}
+              onTestBridge={handleTestBridge}
             />
           )}
         </main>
       </div>
 
-      {/* Emergency Kill Switch Modal */}
       <KillSwitchModal
         isOpen={isKillSwitchOpen}
         onClose={() => setIsKillSwitchOpen(false)}

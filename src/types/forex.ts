@@ -279,9 +279,13 @@ export interface BacktestResult {
   equityCurve: { time: number; equity: number; drawdownPct: number; balance: number }[];
   trades: BacktestTrade[];
   monthlyReturns: MonthlyReturn[];
+  hourlyReturns?: { hour: number; pnl: number; tradesCount: number }[];
+  weekdayReturns?: { weekday: string; pnl: number; tradesCount: number }[];
   monteCarlo: MonteCarloConfidence[];
+  mcSeed?: number;
   overfittingWarningScore: number;
   overfittingNotes: string[];
+  overfittingLabel?: 'Lower Estimated Overfitting Risk' | 'Moderate Empirical Divergence' | 'Elevated Overfitting Indication';
   aiSummary?: string;
   createdAt: string;
 }
@@ -364,4 +368,153 @@ export interface PineConversionResponse {
   lookaheadDetected: boolean;
   repaintingDetected: boolean;
   explanation: string;
+  author?: string;
+  sourceUrl?: string;
+  license?: string;
+  strategySettings?: {
+    commissionValue?: number;
+    slippage?: number;
+    pyramiding?: number;
+    defaultQtyValue?: number;
+  };
 }
+
+export type OrderStatus = 'PENDING_BROKER' | 'SENT' | 'FILLED' | 'REJECTED' | 'UNKNOWN';
+
+export interface OrderRecord {
+  id: string;
+  idempotencyKey: string;
+  botId: string;
+  magicNumber: number;
+  ticket?: number;
+  symbol: SymbolName;
+  side: 'BUY' | 'SELL';
+  volume: number;
+  intentPrice: number;
+  fillPrice?: number;
+  sl: number; // Mandatory Stop-Loss
+  tp?: number;
+  status: OrderStatus;
+  comment: string;
+  createdAt: string;
+  filledAt?: string;
+  errorReason?: string;
+}
+
+export interface LiveTokenRecord {
+  token: string;
+  botId: string;
+  accountLogin: string;
+  riskHash: string;
+  createdAt: string;
+  expiresAt: string;
+  usedAt?: string;
+}
+
+export interface OptimizationParamRange {
+  name: string;
+  min: number;
+  max: number;
+  step: number;
+}
+
+export interface OptimizationConfig {
+  strategyId: string;
+  symbol: SymbolName;
+  timeframe: Timeframe;
+  startDate: string;
+  endDate: string;
+  inSamplePct: number; // e.g. 70
+  searchType: 'grid' | 'random';
+  randomTrials?: number;
+  seed?: number;
+  paramRanges: OptimizationParamRange[];
+  initialBalance: number;
+  costModel: CostModel;
+}
+
+export interface OptimizationTrial {
+  id: string;
+  params: Record<string, any>;
+  isSharpe: number;
+  oosSharpe: number;
+  isNetProfit: number;
+  oosNetProfit: number;
+  isTrades: number;
+  oosTrades: number;
+  isWinRate: number;
+  oosWinRate: number;
+  maxDrawdownPct: number;
+  overfittingScore: number;
+  overfittingLabel: 'Lower Estimated Overfitting Risk' | 'Moderate Empirical Divergence' | 'Elevated Overfitting Indication';
+  overfittingNotes: string[];
+}
+
+export interface OptimizationReport {
+  id: string;
+  strategyId: string;
+  symbol: SymbolName;
+  timeframe: Timeframe;
+  totalTrials: number;
+  trials: OptimizationTrial[];
+  bestTrial?: OptimizationTrial;
+  walkForwardDegradationRatio: number;
+  overallOverfittingScore: number;
+  paramXName: string;
+  paramYName: string;
+  metric: 'oosSharpe' | 'oosNetProfit' | 'isSharpe';
+  heatmapMatrix: { x: number; y: number; value: number }[];
+  seed: number;
+  createdAt: string;
+}
+
+export interface MonteCarloAnalysis {
+  seed: number;
+  trialsCount: number;
+  medianMaxDrawdownPct: number;
+  percentile95MaxDrawdownPct: number;
+  medianFinalEquity: number;
+  percentile5FinalEquity: number;
+  ruinProbabilityPct: number;
+  reshuffledCurves: { timeIndex: number; equity: number }[][];
+  bootstrappedCurves: { timeIndex: number; equity: number }[][];
+}
+
+export interface TradingViewTradeRecord {
+  tradeNumber: number;
+  type: 'Entry Long' | 'Exit Long' | 'Entry Short' | 'Exit Short';
+  signal: string;
+  date: string;
+  price: number;
+  contracts: number;
+  profitUSD?: number;
+  cumProfitUSD?: number;
+  runupUSD?: number;
+  drawdownUSD?: number;
+}
+
+export interface TradingViewComparisonReport {
+  tvTradeCount: number;
+  portalTradeCount: number;
+  tradeCountMatch: boolean;
+  tvNetProfit: number;
+  portalNetProfit: number;
+  pnlDifferenceUSD: number;
+  pnlDifferencePct: number;
+  timingDivergenceMinutes: number;
+  alignmentScore: number; // 0 - 100
+  notes: string[];
+}
+
+export interface DataIntegrityReport {
+  totalBars: number;
+  validBars: number;
+  gapCount: number;
+  duplicateCount: number;
+  invalidOhlcCount: number;
+  gaps: { startTime: number; endTime: number; missingBarsEstimated: number }[];
+  invalidBars: { time: number; reason: string }[];
+  sha256Hash: string;
+  qualityScore: number; // 0 - 100
+}
+

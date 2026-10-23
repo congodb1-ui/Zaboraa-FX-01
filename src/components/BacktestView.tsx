@@ -11,6 +11,7 @@ import {
 } from '../types/forex';
 import { runBacktest } from '../engine/backtester';
 import { getStrategyExecutor } from '../services/builtInStrategies';
+import { generateStandaloneBacktestHtmlReport } from '../engine/htmlReport';
 import {
   Play,
   RotateCcw,
@@ -24,6 +25,7 @@ import {
   Database,
   ShieldAlert,
   Info,
+  Clock,
 } from 'lucide-react';
 
 interface BacktestViewProps {
@@ -145,43 +147,12 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
 
   const handleDownloadReport = () => {
     if (!result) return;
-    if (result.provenance.source === 'SIMULATED') {
-      alert('Export Blocked: Simulated datasets are strictly restricted from research report export.');
-      return;
-    }
-
-    const reportHtml = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Zaboraa FX Research Report - ${selectedStrategy?.name}</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b101d; color: #f1f5f9; padding: 2rem; }
-    h1 { color: #3b82f6; }
-    .prov { background: #131b2e; border: 1px solid #3b82f6; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; }
-    .card { background: #131b2e; border: 1px solid #1e293b; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; }
-  </style>
-</head>
-<body>
-  <h1>Zaboraa FX Institutional Quantitative Report</h1>
-  <div class="prov">
-    <p><strong>DATA PROVENANCE:</strong> ${result.provenance.label} (${result.provenance.details})</p>
-    <p><strong>Symbol:</strong> ${result.symbol} | <strong>Timeframe:</strong> ${result.timeframe} | <strong>Bars:</strong> ${result.barCount.toLocaleString()}</p>
-    <p><strong>Period:</strong> ${result.period} | <strong>UTC Offset:</strong> UTC+${result.provenance.utcOffsetHours}</p>
-  </div>
-  <div class="card">
-    <p><strong>Net Profit:</strong> $${result.netProfit} (${result.returnPct}%) | <strong>Profit Factor:</strong> ${result.profitFactor} | <strong>Win Rate:</strong> ${result.winRate}%</p>
-    <p><strong>Max Drawdown:</strong> ${result.maxDrawdownPct}% ($${result.maxDrawdownAmount}) | <strong>Sharpe:</strong> ${result.sharpeRatio}</p>
-  </div>
-</body>
-</html>
-    `;
+    const reportHtml = generateStandaloneBacktestHtmlReport(result);
     const blob = new Blob([reportHtml], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `ZaboraaFX_${result.symbol}_${result.timeframe}_ResearchReport.html`;
+    a.download = `ZaboraaFX_${result.symbol}_${result.timeframe}_Backtest_${Date.now()}.html`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -488,6 +459,166 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
               </svg>
             </div>
           </div>
+
+          {/* Quantitative Breakdown: Costs, Excursions & Overfitting */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Cost Breakdown */}
+            <div className="bg-[#0D1322] border border-slate-800 rounded-xl p-4 shadow-sm">
+              <div className="text-xs font-bold uppercase tracking-wider text-slate-300 mb-3 flex items-center justify-between">
+                <span>Broker Friction & Costs</span>
+                <span className="font-mono text-amber-400">
+                  ${(result.totalSpreadCost + result.totalCommission + result.totalSwap + result.totalSlippageCost).toFixed(2)}
+                </span>
+              </div>
+              <div className="space-y-2 text-xs font-mono">
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>Spread Impact</span>
+                  <span className="text-slate-200">${result.totalSpreadCost.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>Commission (${result.totalTrades > 0 ? (result.totalCommission / result.totalTrades).toFixed(2) : '0'}/trade)</span>
+                  <span className="text-slate-200">${result.totalCommission.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>Financing Swap</span>
+                  <span className="text-slate-200">${result.totalSwap.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>Simulated Slippage</span>
+                  <span className="text-slate-200">${result.totalSlippageCost.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Trade Excursion Analysis */}
+            <div className="bg-[#0D1322] border border-slate-800 rounded-xl p-4 shadow-sm">
+              <div className="text-xs font-bold uppercase tracking-wider text-slate-300 mb-3 flex items-center justify-between">
+                <span>Excursion Analysis (MAE / MFE)</span>
+                <span className="text-[10px] text-slate-500 font-sans">Pip Extremes</span>
+              </div>
+              {(() => {
+                const avgMae = result.trades.length ? result.trades.reduce((s, t) => s + (t.mae || 0), 0) / result.trades.length : 0;
+                const avgMfe = result.trades.length ? result.trades.reduce((s, t) => s + (t.mfe || 0), 0) / result.trades.length : 0;
+                return (
+                  <div className="space-y-2 text-xs font-mono">
+                    <div className="flex justify-between items-center text-slate-400">
+                      <span>Avg Adverse (MAE)</span>
+                      <span className="text-rose-400 font-bold">-{avgMae.toFixed(1)} pips</span>
+                    </div>
+                    <div className="flex justify-between items-center text-slate-400">
+                      <span>Avg Favorable (MFE)</span>
+                      <span className="text-emerald-400 font-bold">+{avgMfe.toFixed(1)} pips</span>
+                    </div>
+                    <div className="flex justify-between items-center text-slate-400">
+                      <span>MFE / MAE Efficiency</span>
+                      <span className="text-blue-400 font-bold">
+                        {avgMae > 0 ? (avgMfe / avgMae).toFixed(2) : avgMfe > 0 ? '99.0' : '0.00'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-slate-400">
+                      <span>Avg Trade Duration</span>
+                      <span className="text-slate-200">
+                        {result.trades.length > 0
+                          ? `${Math.round(result.trades.reduce((s, t) => s + t.durationMinutes, 0) / result.trades.length)}m`
+                          : '0m'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Heuristic Overfitting Indicator */}
+            <div className="bg-[#0D1322] border border-slate-800 rounded-xl p-4 shadow-sm">
+              <div className="text-xs font-bold uppercase tracking-wider text-slate-300 mb-2 flex items-center justify-between">
+                <span>Heuristic Overfitting Score</span>
+                <span className="font-mono text-sm font-bold text-white">{result.overfittingWarningScore || 0}/100</span>
+              </div>
+              <div className="text-[11px] font-medium text-slate-300 mb-2">
+                {result.overfittingLabel || 'Heuristic Assessment Active'}
+              </div>
+              <div className="space-y-1">
+                {result.overfittingNotes && result.overfittingNotes.length > 0 ? (
+                  result.overfittingNotes.slice(0, 3).map((note, nIdx) => (
+                    <div key={nIdx} className="text-[10px] text-slate-400 leading-tight">
+                      • {note}
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-[10px] text-slate-500">
+                    Sample size: {result.totalTrades} trades · Parameter DOF checked
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Hourly & Weekday Performance Distributions */}
+          {(result.hourlyReturns || result.weekdayReturns) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {result.hourlyReturns && (
+                <div className="bg-[#0D1322] border border-slate-800 rounded-xl p-4 shadow-sm">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-blue-400" />
+                      Hourly P&L Distribution (UTC)
+                    </span>
+                    <span className="text-[10px] text-slate-500 font-mono">00:00 - 23:00</span>
+                  </div>
+                  <div className="grid grid-cols-12 gap-1 h-20 items-end pt-2">
+                    {result.hourlyReturns.filter((_, i) => i % 2 === 0).map((h) => {
+                      const maxPnl = Math.max(1, ...result.hourlyReturns!.map((item) => Math.abs(item.pnl)));
+                      const heightPct = Math.min(100, Math.max(12, (Math.abs(h.pnl) / maxPnl) * 100));
+                      const isPos = h.pnl >= 0;
+                      return (
+                        <div key={h.hour} className="flex flex-col items-center gap-1 group relative">
+                          <div
+                            className={`w-full rounded-t transition-all ${
+                              isPos ? 'bg-emerald-500/60 group-hover:bg-emerald-400' : 'bg-rose-500/60 group-hover:bg-rose-400'
+                            }`}
+                            style={{ height: `${heightPct}%` }}
+                            title={`${h.hour}:00 UTC: $${h.pnl.toFixed(2)} (${h.tradesCount} trades)`}
+                          />
+                          <span className="text-[9px] font-mono text-slate-500">{h.hour}h</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {result.weekdayReturns && (
+                <div className="bg-[#0D1322] border border-slate-800 rounded-xl p-4 shadow-sm">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-purple-400" />
+                      Weekday P&L Distribution
+                    </span>
+                    <span className="text-[10px] text-slate-500 font-mono">Mon - Fri</span>
+                  </div>
+                  <div className="grid grid-cols-5 gap-2 h-20 items-end pt-2">
+                    {result.weekdayReturns.map((w) => {
+                      const maxPnl = Math.max(1, ...result.weekdayReturns!.map((item) => Math.abs(item.pnl)));
+                      const heightPct = Math.min(100, Math.max(12, (Math.abs(w.pnl) / maxPnl) * 100));
+                      const isPos = w.pnl >= 0;
+                      return (
+                        <div key={w.weekday} className="flex flex-col items-center gap-1 group relative">
+                          <div
+                            className={`w-full rounded-t transition-all ${
+                              isPos ? 'bg-emerald-500/60 group-hover:bg-emerald-400' : 'bg-rose-500/60 group-hover:bg-rose-400'
+                            }`}
+                            style={{ height: `${heightPct}%` }}
+                            title={`${w.weekday}: $${w.pnl.toFixed(2)} (${w.tradesCount} trades)`}
+                          />
+                          <span className="text-[10px] font-mono text-slate-400">{w.weekday}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Trade Execution List */}
           <div className="bg-[#0D1322] border border-slate-800 rounded-xl p-4 shadow-sm">

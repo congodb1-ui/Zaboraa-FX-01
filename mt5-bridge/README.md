@@ -67,7 +67,9 @@ INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
 | `GET` | `/symbols` | Broker symbol specs (EURUSD vs EURUSDm), contract sizes, and live spreads |
 | `GET` | `/candles` | Query broker rates range via `copy_rates_from_pos`, normalized to UTC |
 | `GET` | `/positions` | List open positions currently held in the MT5 terminal |
-| `POST` | `/orders` | Submit order (requires `ALLOW_TRADING=true`) |
+| `POST` | `/orders` | Submit order (requires `ALLOW_TRADING=true`, mandatory Stop-Loss `sl > 0`, and `ALLOW_LIVE=true` if real account) |
+| `POST` | `/kill` | Emergency kill switch: liquidates all positions, cancels pendings, persists kill state to disk, and requires Bearer token |
+| `POST` | `/kill/reset` | Clears persisted bridge kill state (requires Bearer token) |
 | `DELETE` | `/positions/{ticket}` | Close position (requires `ALLOW_TRADING=true`) |
 
 ---

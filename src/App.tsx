@@ -27,13 +27,23 @@ import { BotsView } from './components/BotsView';
 import { PositionsView } from './components/PositionsView';
 import { JournalView } from './components/JournalView';
 import { SettingsView } from './components/SettingsView';
+import { OptimizationView } from './components/OptimizationView';
 import { KillSwitchModal } from './components/KillSwitchModal';
+import { RiskDisclaimerModal } from './components/RiskDisclaimerModal';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [currentSymbol, setCurrentSymbol] = useState<SymbolName>('EURUSD');
   const [currentTimeframe, setCurrentTimeframe] = useState<Timeframe>('H1');
   const [isKillSwitchOpen, setIsKillSwitchOpen] = useState(false);
+  const [isDisclaimerOpen, setIsDisclaimerOpen] = useState(false);
+
+  useEffect(() => {
+    const accepted = localStorage.getItem('zfx_disclaimer_accepted');
+    if (!accepted) {
+      setIsDisclaimerOpen(true);
+    }
+  }, []);
 
   // Datasets initialized EMPTY by default to enforce research honesty
   const [datasets, setDatasets] = useState<DatasetRecord[]>([]);
@@ -513,6 +523,14 @@ export default function App() {
             />
           )}
 
+          {activeTab === 'optimizations' && (
+            <OptimizationView
+              strategies={strategies}
+              currentSymbol={currentSymbol}
+              currentTimeframe={currentTimeframe}
+            />
+          )}
+
           {activeTab === 'bots' && (
             <BotsView
               bots={bots}
@@ -558,12 +576,27 @@ export default function App() {
         </main>
       </div>
 
+      {/* Persistent Regulatory & Risk Disclaimer Footer */}
+      <footer className="px-6 py-2 bg-[#080C16] border-t border-slate-900 text-center text-[10px] text-slate-500 select-none">
+        <span>
+          Risk Disclosure: Trading Forex and leveraged financial instruments involves substantial risk of loss and is not suitable for every investor. Past backtest results, parameter optimization heatmaps, and simulated performance metrics do not predict future live trading execution.
+        </span>
+      </footer>
+
       <KillSwitchModal
         isOpen={isKillSwitchOpen}
         onClose={() => setIsKillSwitchOpen(false)}
         positions={positions}
         bots={bots}
         onExecuteKillSwitch={handleExecuteKillSwitch}
+      />
+
+      <RiskDisclaimerModal
+        isOpen={isDisclaimerOpen}
+        onAccept={() => {
+          localStorage.setItem('zfx_disclaimer_accepted', 'true');
+          setIsDisclaimerOpen(false);
+        }}
       />
     </div>
   );

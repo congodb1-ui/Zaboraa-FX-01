@@ -451,62 +451,131 @@ export function runBacktest(
     };
   });
 
-  // Monte Carlo simulation: reshuffle trades 300 times to get drawdown and equity distributions
-  const monteCarloRuns: { maxDd: number; finalBal: number }[] = [];
-  const mcIterations = Math.min(300, Math.max(50, totalTrades * 4));
+  // Hourly and Weekday Performance Distributions
+  const hourlyMap: Record<number, { pnl: number; count: number }> = {};
+  for (let h = 0; h < 24; h++) hourlyMap[h] = { pnl: 0, count: 0 };
+
+  const weekdayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const weekdayMap: Record<string, { pnl: number; count: number }> = {
+    Mon: { pnl: 0, count: 0 },
+    Tue: { pnl: 0, count: 0 },
+    Wed: { pnl: 0, count: 0 },
+    Thu: { pnl: 0, count: 0 },
+    Fri: { pnl: 0, count: 0 },
+  };
+
+  for (const t of trades) {
+    const d = new Date(t.entryTime * 1000);
+    const hour = d.getUTCHours();
+    const day = weekdayNames[d.getUTCDay()];
+
+    if (hourlyMap[hour]) {
+      hourlyMap[hour].pnl += t.pnl;
+      hourlyMap[hour].count += 1;
+    }
+    if (weekdayMap[day]) {
+      weekdayMap[day].pnl += t.pnl;
+      weekdayMap[day].count += 1;
+    }
+  }
+
+  const hourlyReturns = Object.entries(hourlyMap).map(([hStr, data]) => ({
+    hour: Number(hStr),
+    pnl: Number(data.pnl.toFixed(2)),
+    tradesCount: data.count,
+  }));
+
+  const weekdayReturns = Object.entries(weekdayMap).map(([day, data]) => ({
+    weekday: day,
+    pnl: Number(data.pnl.toFixed(2)),
+    tradesCount: data.count,
+  }));
+
+  // Seeded Monte Carlo Simulation (using 1,000 iterations and Mulberry32 PRNG)
+  const mcSeed = (config.params && typeof config.params._mcSeed === 'number') ? config.params._mcSeed : 123456789;
+  const mcIterations = 1000;
+  
+  // Mulberry32
+  let mcA = mcSeed >>> 0;
+  const mcRng = () => {
+    let t = (mcA += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  const tradePnls = trades.map(t => t.pnl);
+  const nTrades = tradePnls.length;
+  const mcRuns: { maxDd: number; finalBal: number }[] = [];
 
   for (let m = 0; m < mcIterations; m++) {
-    // Permute trades
-    const shuffled = [...trades].sort(() => Math.random() - 0.5);
+    // Fisher-Yates reshuffling with seeded RNG
+    const shuffled = [...tradePnls];
+    for (let idx = nTrades - 1; idx > 0; idx--) {
+      const j = Math.floor(mcRng() * (idx + 1));
+      const tmp = shuffled[idx];
+      shuffled[idx] = shuffled[j];
+      shuffled[j] = tmp;
+    }
+
     let mcBal = config.initialBalance;
     let mcPeak = config.initialBalance;
     let mcMaxDd = 0;
 
-    for (const t of shuffled) {
-      mcBal += t.pnl;
+    for (const pnl of shuffled) {
+      mcBal += pnl;
       if (mcBal > mcPeak) mcPeak = mcBal;
       const dd = ((mcPeak - mcBal) / mcPeak) * 100;
       if (dd > mcMaxDd) mcMaxDd = dd;
     }
-    monteCarloRuns.push({ maxDd: mcMaxDd, finalBal: mcBal });
+    mcRuns.push({ maxDd: mcMaxDd, finalBal: mcBal });
   }
 
-  monteCarloRuns.sort((a, b) => a.maxDd - b.maxDd);
-  const p95Index = Math.floor(monteCarloRuns.length * 0.95);
-  const p99Index = Math.floor(monteCarloRuns.length * 0.99);
+  mcRuns.sort((a, b) => a.maxDd - b.maxDd);
+  const p95Index = Math.min(mcRuns.length - 1, Math.floor(mcRuns.length * 0.95));
+  const p99Index = Math.min(mcRuns.length - 1, Math.floor(mcRuns.length * 0.99));
 
   const monteCarlo: MonteCarloConfidence[] = [
     {
       percentile: 95,
-      maxDrawdownPct: Number((monteCarloRuns[p95Index]?.maxDd || maxDrawdownPct).toFixed(1)),
-      finalEquity: Number((monteCarloRuns[p95Index]?.finalBal || balance).toFixed(2)),
+      maxDrawdownPct: Number((mcRuns[p95Index]?.maxDd || maxDrawdownPct).toFixed(1)),
+      finalEquity: Number((mcRuns[p95Index]?.finalBal || balance).toFixed(2)),
     },
     {
       percentile: 99,
-      maxDrawdownPct: Number((monteCarloRuns[p99Index]?.maxDd || maxDrawdownPct * 1.2).toFixed(1)),
-      finalEquity: Number((monteCarloRuns[p99Index]?.finalBal || balance * 0.95).toFixed(2)),
+      maxDrawdownPct: Number((mcRuns[p99Index]?.maxDd || maxDrawdownPct * 1.2).toFixed(1)),
+      finalEquity: Number((mcRuns[p99Index]?.finalBal || balance * 0.95).toFixed(2)),
     },
   ];
 
-  // Overfitting score
-  const overfittingNotes: string[] = [];
-  let overfittingScore = 15; // baseline healthy
+  // Heuristic Overfitting Score calculation
+  const paramCount = Object.keys(config.params || {}).filter(k => !k.startsWith('_')).length || 2;
+  const tpp = totalTrades / Math.max(1, paramCount);
+  const tppPenalty = Math.min(100, Math.max(0, 100 * (1 - tpp / 30)));
+  const samplePenalty = Math.min(100, Math.max(0, 100 * (1 - totalTrades / 150)));
+  const rawScore = 0.4 * samplePenalty + 0.4 * tppPenalty + 0.2 * (profitFactor > 3.5 ? 40 : 10);
+  const overfittingScore = Math.min(100, Math.max(0, Math.round(rawScore)));
 
+  const overfittingNotes: string[] = [];
   if (totalTrades < 30) {
-    overfittingScore += 35;
-    overfittingNotes.push('Low trade sample count (< 30 trades). Statistical confidence is constrained.');
+    overfittingNotes.push(`Low closed trade sample count (${totalTrades} trades). Statistical confidence is constrained.`);
   }
-  if (winRate > 80 && totalTrades > 15) {
-    overfittingScore += 25;
-    overfittingNotes.push('High win-rate (> 80%) often indicates curve-fitting or hidden loss distribution.');
+  if (tpp < 15) {
+    overfittingNotes.push(`Trades per parameter is ${tpp.toFixed(1)}, below the target threshold of 30.`);
   }
-  if (profitFactor > 3.5 && totalTrades > 20) {
-    overfittingScore += 15;
-    overfittingNotes.push('Excessive profit factor in backtests may degrade significantly under live broker slippage.');
+  if (winRate > 75 && totalTrades > 15) {
+    overfittingNotes.push(`Win rate of ${winRate.toFixed(1)}% may reflect historical curve fitting under idealized spread assumptions.`);
   }
   if (overfittingNotes.length === 0) {
-    overfittingNotes.push('Parameters appear reasonably balanced across historical bar sample.');
+    overfittingNotes.push('Strategy parameters show balanced trade sample distribution.');
   }
+
+  const overfittingLabel =
+    overfittingScore < 25
+      ? 'Lower Estimated Overfitting Risk'
+      : overfittingScore <= 50
+      ? 'Moderate Empirical Divergence'
+      : 'Elevated Overfitting Indication';
 
   const durationDays = candles.length > 0
     ? Math.max(1, Math.round((candles[candles.length - 1].time - candles[0].time) / 86400))
@@ -571,8 +640,12 @@ export function runBacktest(
     equityCurve,
     trades,
     monthlyReturns,
+    hourlyReturns,
+    weekdayReturns,
     monteCarlo,
-    overfittingWarningScore: Math.min(100, overfittingScore),
+    mcSeed,
+    overfittingWarningScore: overfittingScore,
+    overfittingLabel,
     overfittingNotes,
     createdAt: new Date().toISOString(),
   };

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Bot, Strategy, SymbolName, Timeframe, BrokerAccount } from '../types/forex';
+import { LiveConfirmationModal } from './LiveConfirmationModal';
 import {
   Bot as BotIcon,
   Play,
@@ -11,6 +12,7 @@ import {
   Terminal,
   AlertTriangle,
   CheckCircle,
+  Key,
 } from 'lucide-react';
 
 interface BotsViewProps {
@@ -30,6 +32,7 @@ export const BotsView: React.FC<BotsViewProps> = ({
 }) => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedBotLogs, setSelectedBotLogs] = useState<Bot | null>(null);
+  const [liveConfirmBot, setLiveConfirmBot] = useState<Bot | null>(null);
 
   // New Bot Form State
   const [botName, setBotName] = useState('EURUSD Trend Bot');
@@ -42,16 +45,11 @@ export const BotsView: React.FC<BotsViewProps> = ({
   const [maxOpenPositions, setMaxOpenPositions] = useState(2);
   const [maxSpreadPips, setMaxSpreadPips] = useState(2.0);
 
-  const [liveConfirmWord, setLiveConfirmWord] = useState('');
+  const [pendingLiveBot, setPendingLiveBot] = useState<Bot | null>(null);
 
   const handleCreate = () => {
-    if (mode === 'LIVE' && liveConfirmWord !== 'CONFIRM_LIVE') {
-      alert('You must type CONFIRM_LIVE to deploy a bot in Exness LIVE mode.');
-      return;
-    }
-
     const strat = strategies.find((s) => s.id === strategyId) || strategies[0];
-    const newBot: Bot = {
+    const candidateBot: Bot = {
       id: `bot_${Date.now()}`,
       name: botName,
       strategyId: strat.id,
@@ -87,8 +85,36 @@ export const BotsView: React.FC<BotsViewProps> = ({
       ],
     };
 
-    onCreateBot(newBot);
+    if (mode === 'LIVE') {
+      setPendingLiveBot(candidateBot);
+      setShowCreateModal(false);
+      return;
+    }
+
+    onCreateBot(candidateBot);
     setShowCreateModal(false);
+  };
+
+  const handleConfirmLiveToken = (liveToken: string) => {
+    if (pendingLiveBot) {
+      const activeBot: Bot = {
+        ...pendingLiveBot,
+        mode: 'LIVE',
+        logs: [
+          ...pendingLiveBot.logs,
+          {
+            time: new Date().toLocaleTimeString(),
+            level: 'WARN',
+            message: `LIVE trading gate cleared. Single-use token acquired: ${liveToken.slice(0, 8)}... (60s TTL)`,
+          },
+        ],
+      };
+      onCreateBot(activeBot);
+      setPendingLiveBot(null);
+    } else if (liveConfirmBot) {
+      onUpdateBotStatus(liveConfirmBot.id, 'RUNNING');
+      setLiveConfirmBot(null);
+    }
   };
 
   return (
@@ -374,20 +400,13 @@ export const BotsView: React.FC<BotsViewProps> = ({
 
               {/* Explicit Live Opt-in */}
               {mode === 'LIVE' && (
-                <div className="p-3 bg-rose-950/50 border border-rose-500/50 rounded-lg space-y-2">
+                <div className="p-3 bg-rose-950/50 border border-rose-500/50 rounded-lg space-y-1.5">
                   <div className="flex items-center gap-1.5 text-rose-400 font-bold">
-                    <AlertTriangle className="w-4 h-4" /> Real Capital Warning
+                    <AlertTriangle className="w-4 h-4" /> Real Capital Safeguard Gate
                   </div>
                   <p className="text-[11px] text-rose-200">
-                    Type <strong>CONFIRM_LIVE</strong> to enable real orders on your Exness live account:
+                    A cryptographic gate will require you to confirm account login <strong>#{account.login}</strong> and review risk thresholds before single-use broker access is granted.
                   </p>
-                  <input
-                    type="text"
-                    value={liveConfirmWord}
-                    onChange={(e) => setLiveConfirmWord(e.target.value)}
-                    placeholder="CONFIRM_LIVE"
-                    className="w-full bg-rose-950/80 border border-rose-600 rounded p-1.5 font-mono text-white text-xs"
-                  />
                 </div>
               )}
             </div>
@@ -403,11 +422,25 @@ export const BotsView: React.FC<BotsViewProps> = ({
                 onClick={handleCreate}
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition-colors shadow-md shadow-emerald-950/40"
               >
-                Launch Bot
+                {mode === 'LIVE' ? 'Proceed to Live Gate' : 'Launch Bot'}
               </button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Live Confirmation Modal */}
+      {(pendingLiveBot || liveConfirmBot) && (
+        <LiveConfirmationModal
+          isOpen={Boolean(pendingLiveBot || liveConfirmBot)}
+          onClose={() => {
+            setPendingLiveBot(null);
+            setLiveConfirmBot(null);
+          }}
+          bot={(pendingLiveBot || liveConfirmBot)!}
+          account={account}
+          onConfirmLive={handleConfirmLiveToken}
+        />
       )}
     </div>
   );

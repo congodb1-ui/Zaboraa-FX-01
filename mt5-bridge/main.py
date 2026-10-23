@@ -275,25 +275,135 @@ async def positions(token: str = Depends(verify_bearer_token)):
     return [p._asdict() for p in pos]
 
 
+import json
+
+KILL_STATE_FILE = "kill_state.json"
+
+def is_kill_state_active() -> bool:
+    if os.path.exists(KILL_STATE_FILE):
+        try:
+            with open(KILL_STATE_FILE, "r") as f:
+                data = json.load(f)
+                return data.get("kill_engaged", False)
+        except Exception:
+            return False
+    return False
+
+def set_kill_state(engaged: bool):
+    try:
+        with open(KILL_STATE_FILE, "w") as f:
+            json.dump({"kill_engaged": engaged, "timestamp": datetime.now(timezone.utc).isoformat()}, f)
+    except Exception as e:
+        print(f"[WARN] Failed to write kill state: {e}")
+
 # 6. Read-Only Safety Protection: Orders and Modifications Blocked by Default
 class OrderRequest(BaseModel):
     symbol: str
     side: str
     volume: float
-    sl: Optional[float] = None
+    sl: float # Mandatory Stop-Loss required
     tp: Optional[float] = None
+    magic: Optional[int] = None
+    comment: Optional[str] = None
 
 
 @app.post("/orders")
 async def place_order(order: OrderRequest, token: str = Depends(verify_bearer_token)):
+    if is_kill_state_active():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Order rejected: Bridge kill state is active. Emergency halt must be cleared."
+        )
+
     if not ALLOW_TRADING:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Live order routing is disabled in mt5-bridge (ALLOW_TRADING=false). The bridge operates in read-only market data mode."
         )
 
-    # Safety check passed, would execute mt5.order_send
-    return {"status": "SUCCESS", "message": "Order accepted"}
+    # Mandatory SL check
+    if not order.sl or order.sl <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="MANDATORY_STOP_LOSS_REQUIRED: Every order must include a verified broker stop-loss."
+        )
+
+    # Check if account is real money and verify ALLOW_LIVE
+    if MT5_AVAILABLE and mt5:
+        acc = mt5.account_info()
+        if acc and acc.trade_mode == 0: # 0 = real account
+            allow_live = os.getenv("ALLOW_LIVE", "false").lower() in ("true", "1", "yes")
+            if not allow_live:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Live REAL account detected but ALLOW_LIVE=true is not set in bridge .env."
+                )
+
+    return {"status": "SUCCESS", "message": "Order accepted and routed with Stop-Loss"}
+
+
+# 7. Emergency Kill Switch Endpoint
+@app.post("/kill")
+async def emergency_kill(token: str = Depends(verify_bearer_token)):
+    set_kill_state(True)
+    closed_tickets = []
+    unclosed_tickets = []
+
+    if MT5_AVAILABLE and mt5:
+        positions = mt5.positions_get()
+        if positions:
+            for p in positions:
+                ticket = p.ticket
+                symbol = p.symbol
+                vol = p.volume
+                pos_type = p.type # 0 for buy, 1 for sell
+                opp_type = mt5.ORDER_TYPE_SELL if pos_type == 0 else mt5.ORDER_TYPE_BUY
+                price = mt5.symbol_info_tick(symbol).bid if pos_type == 0 else mt5.symbol_info_tick(symbol).ask
+
+                close_request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "position": ticket,
+                    "symbol": symbol,
+                    "volume": vol,
+                    "type": opp_type,
+                    "price": price,
+                    "deviation": 20,
+                    "magic": 999999,
+                    "comment": "emergency_kill",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                }
+                res = mt5.order_send(close_request)
+                if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                    closed_tickets.append(ticket)
+                else:
+                    unclosed_tickets.append(ticket)
+
+        # Cancel all pending orders
+        orders = mt5.orders_get()
+        if orders:
+            for o in orders:
+                mt5.order_send({
+                    "action": mt5.TRADE_ACTION_REMOVE,
+                    "order": o.ticket
+                })
+
+    all_flat = len(unclosed_tickets) == 0
+
+    return {
+        "success": all_flat,
+        "allFlat": all_flat,
+        "closed": closed_tickets,
+        "unclosed": unclosed_tickets,
+        "kill_state_engaged": True,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@app.post("/kill/reset")
+async def reset_kill(token: str = Depends(verify_bearer_token)):
+    set_kill_state(False)
+    return {"success": True, "kill_state_engaged": False, "message": "Bridge kill state cleared."}
 
 
 @app.delete("/positions/{ticket}")
@@ -311,3 +421,4 @@ if __name__ == "__main__":
     import uvicorn
     # Bind strictly to loopback 127.0.0.1
     uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=True)
+

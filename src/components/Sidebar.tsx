@@ -10,6 +10,7 @@ import {
   Layers,
   BookOpen,
   Sliders,
+  Cpu,
 } from 'lucide-react';
 
 export type ActiveTab =
@@ -19,6 +20,7 @@ export type ActiveTab =
   | 'strategies'
   | 'pine'
   | 'backtest'
+  | 'optimizations'
   | 'bots'
   | 'positions'
   | 'journal'
@@ -42,6 +44,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'strategies', label: 'Strategy Studio', icon: Code2 },
     { id: 'pine', label: 'Pine Script AI', icon: Sparkles },
     { id: 'backtest', label: 'Backtesting Lab', icon: FlaskConical },
+    { id: 'optimizations', label: 'Optimization Suite', icon: Cpu },
     { id: 'bots', label: 'Automated Bots', icon: Bot },
     { id: 'positions', label: 'Positions & Orders', icon: Layers, badge: openPositionsCount },
     { id: 'journal', label: 'Trade Journal', icon: BookOpen },

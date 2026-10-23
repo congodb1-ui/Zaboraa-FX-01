@@ -1,0 +1,6 @@
+{
+  "name": "Zaboraa FX",
+  "description": "Automated Forex & Precious Metals Trading Portal with Exness MT5 bridge, Pine Script AI converter, and realistic backtesting engine.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

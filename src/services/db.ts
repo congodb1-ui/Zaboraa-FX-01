@@ -29,10 +29,11 @@ export function getDb(): DatabaseSync {
 
   dbInstance = new DatabaseSync(DB_PATH);
 
-  // Configure pragmas for crash safety and persistence
+  // Configure pragmas for crash safety, concurrency, and persistence
   dbInstance.exec('PRAGMA journal_mode = WAL;');
   dbInstance.exec('PRAGMA synchronous = FULL;');
   dbInstance.exec('PRAGMA foreign_keys = ON;');
+  dbInstance.exec('PRAGMA busy_timeout = 10000;');
 
   initSchema(dbInstance);
   return dbInstance;
@@ -900,6 +901,25 @@ export function insertRiskEvent(event: {
     );
   } catch (err) {
     console.error('Failed to write risk event to SQLite:', err);
+  }
+}
+
+export function getRecentRiskEvents(limit = 100): Array<{
+  id: string;
+  timestamp: string;
+  actor: string;
+  action: string;
+  entity: string;
+  details: string;
+  severity: 'INFO' | 'WARN' | 'CRITICAL';
+  status: string;
+}> {
+  try {
+    const db = getDb();
+    return db.prepare('SELECT * FROM risk_events ORDER BY timestamp DESC LIMIT ?').all(limit) as any[];
+  } catch (err) {
+    console.error('Failed to query risk_events from SQLite:', err);
+    return [];
   }
 }
 

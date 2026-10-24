@@ -36,9 +36,11 @@ import {
   getCachedAi,
   setCachedAi,
   getBotById,
+  getRecentRiskEvents,
 } from './src/services/db';
 import { BridgeClient, executeOrderThroughBridge } from './src/services/bridgeClient';
 import { reconcileWithBroker } from './src/engine/reconciliation';
+import { globalWatchdog } from './src/engine/watchdog';
 import {
   savePartitionedCandles,
   loadPartitionedCandles,
@@ -62,7 +64,7 @@ export const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const isPreview = process.env.AI_STUDIO_PREVIEW === 'true';
 const rawHost = process.env.HOST ? process.env.HOST.split('#')[0].trim() : '';
-const HOST = rawHost || (isPreview ? '0.0.0.0' : '127.0.0.1');
+const HOST = rawHost || '0.0.0.0';
 const isProduction = process.env.NODE_ENV === 'production';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 
@@ -179,8 +181,10 @@ export function apiSecurityMiddleware(req: any, res: any, next: any) {
   const hasValidHeader = sessionHeader === SERVER_SESSION_SECRET;
   const isSameOrigin =
     req.headers['sec-fetch-site'] === 'same-origin' ||
+    req.headers['sec-fetch-site'] === 'same-site' ||
     (origin && host && origin.toLowerCase().includes(host.toLowerCase())) ||
-    (!origin && req.headers.referer && host && req.headers.referer.toLowerCase().includes(host.toLowerCase()));
+    (!origin && req.headers.referer && host && req.headers.referer.toLowerCase().includes(host.toLowerCase())) ||
+    (isLocalHost(host) && !origin);
 
   // Allow health endpoint for container monitoring; all operational routes require session secret or same-origin
   if (req.path === '/health') {
@@ -1364,6 +1368,30 @@ app.delete('/api/bots/:id', (req, res) => {
   }
 });
 
+// Watchdog Status & Manual Confirmed Resume
+app.get('/api/watchdog/status', (req, res) => {
+  res.json(globalWatchdog.getStatus());
+});
+
+app.post('/api/watchdog/resume', (req, res) => {
+  const result = globalWatchdog.confirmManualResume();
+  if (!result.success) {
+    return res.status(400).json(result);
+  }
+  res.json(result);
+});
+
+app.post('/api/watchdog/heartbeat', (req, res) => {
+  globalWatchdog.recordHeartbeat();
+  res.json({ success: true, timestamp: new Date().toISOString() });
+});
+
+// Risk Events Log
+app.get('/api/risk/events', (req, res) => {
+  const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
+  res.json(getRecentRiskEvents(limit));
+});
+
 app.post('/api/jobs/optimize', async (req, res) => {
   const { config, symbol, timeframe, candles } = req.body;
   if (!config) {
@@ -1514,7 +1542,8 @@ async function startServer() {
 }
 
 // Only start listening if not running under test suite
-if (process.env.NODE_ENV !== 'test') {
+const isTestEnv = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+if (!isTestEnv) {
   startServer().catch((err) => {
     console.error('Failed to start server:', err);
   });

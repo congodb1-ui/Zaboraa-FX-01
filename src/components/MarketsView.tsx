@@ -67,6 +67,18 @@ export const MarketsView: React.FC<MarketsViewProps> = ({
 
   return (
     <div className="space-y-4">
+      {/* Simulation Notice Banner */}
+      {(!account.isConnected || account.isSimulated) && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-2.5 px-3.5 flex items-center justify-between text-xs text-amber-300">
+          <div className="flex items-center gap-2 font-mono">
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/40">
+              SIMULATED
+            </span>
+            <span>SIMULATION: no broker connected. Order ticket executes locally in simulated mode.</span>
+          </div>
+        </div>
+      )}
+
       {/* Symbol Tabs */}
       <div className="flex items-center justify-between bg-[#0B101D] border border-slate-800 p-1.5 rounded-xl">
         <div className="flex items-center gap-1">

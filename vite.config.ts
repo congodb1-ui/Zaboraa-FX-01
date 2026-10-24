@@ -14,9 +14,9 @@ export default defineConfig(() => {
       },
     },
     server: {
-      host: isPreview ? '0.0.0.0' : '127.0.0.1',
+      host: '0.0.0.0',
       port: 3000,
-      allowedHosts: isPreview ? (true as const) : ['127.0.0.1', 'localhost'],
+      allowedHosts: true as const,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',

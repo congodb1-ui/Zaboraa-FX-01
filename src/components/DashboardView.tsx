@@ -44,6 +44,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Simulation Notice Banner */}
+      {(!account.isConnected || account.isSimulated) && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 px-4 flex items-center justify-between text-xs text-amber-300">
+          <div className="flex items-center gap-2 font-mono">
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/40">
+              SIMULATED
+            </span>
+            <span>SIMULATION: no broker connected. Metrics and portfolio are operating in paper mode.</span>
+          </div>
+        </div>
+      )}
+
       {/* Metric Cards Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5">
         <div className="bg-[#0D1322] border border-slate-800 rounded-xl p-3.5 shadow-sm">

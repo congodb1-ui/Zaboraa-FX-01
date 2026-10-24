@@ -6,7 +6,7 @@ import {
   DatasetRecord,
   DataProvenance,
 } from '../types/forex';
-import { auditDataQuality, QualityReport } from '../services/marketData';
+import { auditDataQuality, QualityReport, generateHistoricalCandles } from '../services/marketData';
 import {
   Database,
   Download,
@@ -68,6 +68,35 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
     setTimeout(() => setNotification(null), 5000);
   };
 
+  const handleGenerateBenchmark = () => {
+    const candles = generateHistoricalCandles(selectedSymbol, selectedTf, 500);
+    const newRecord: DatasetRecord = {
+      id: `ds_benchmark_${selectedSymbol.toLowerCase()}_${selectedTf.toLowerCase()}_${Date.now()}`,
+      symbol: selectedSymbol,
+      timeframe: selectedTf,
+      rowCount: candles.length,
+      fileSizeKB: Math.round(candles.length * 0.045),
+      firstDate: new Date(candles[0].time * 1000).toISOString().slice(0, 10),
+      lastDate: new Date(candles[candles.length - 1].time * 1000).toISOString().slice(0, 10),
+      provenance: {
+        source: 'SIMULATED',
+        label: 'SIMULATED',
+        details: 'Simulated high-frequency geometric Brownian motion with realistic tick spreads.',
+        isResearchEligible: true,
+        utcOffsetHours: 2,
+      },
+      candles,
+      qualityScore: 99,
+      lastUpdated: new Date().toISOString(),
+    };
+    onAddDataset(newRecord);
+    setNotification({
+      message: `Generated benchmark dataset for ${selectedSymbol} (${selectedTf}) with 500 bars.`,
+      type: 'success',
+    });
+    setTimeout(() => setNotification(null), 5000);
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -82,7 +111,7 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
 
   const handleProcessCsv = () => {
     if (!csvRawText.trim()) {
-      alert('Please select or paste a valid CSV file.');
+      setNotification({ message: 'Please select or paste a valid CSV file.', type: 'warn' });
       return;
     }
 
@@ -170,7 +199,8 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
       });
       setTimeout(() => setNotification(null), 5000);
     } catch (err: any) {
-      alert(`CSV Import Failed: ${err.message}`);
+      setNotification({ message: `CSV Import Failed: ${err.message}`, type: 'warn' });
+      setTimeout(() => setNotification(null), 5000);
     }
   };
 
@@ -190,6 +220,14 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={handleGenerateBenchmark}
+              className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors border border-blue-500/40"
+              title="Generate 500 benchmark bars for active pair/timeframe"
+            >
+              <Database className="w-3.5 h-3.5 text-blue-400" />
+              <span>Generate Benchmark ({selectedSymbol} {selectedTf})</span>
+            </button>
             <button
               onClick={() => setShowCsvModal(true)}
               className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors border border-slate-700"

@@ -46,6 +46,14 @@ When successfully started, you will see:
 INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
 ```
 
+### Running Automated Bridge Tests (Windows)
+To execute the bridge unit and security test suite on Windows with your virtual environment active:
+```powershell
+pip install -r requirements-dev.txt
+pytest test_bridge.py -v
+```
+*(Note: These tests verify bridge authentication, account type classification, volume normalization, and order pre-validation).*
+
 ### Diagnostic Demo Check:
 Run this command in Python to inspect your account's trade mode:
 ```powershell

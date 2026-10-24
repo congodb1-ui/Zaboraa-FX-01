@@ -38,15 +38,15 @@ Items in this table have automated unit/integration tests running in the test su
 | **Order Idempotency** | Prevents duplicate orders per interval | `src/engine/__tests__/reconciliation.test.ts` | Pass | SQLite UNIQUE constraint rejects duplicate |
 | **Zero-Retry Order Send** | Exactly 1 attempt on sendOrder (0 retries) | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Network/5xx leaves order UNKNOWN; prevents double executions |
 | **6-Case Broker Reconciliation** | Full bidirectional engine for orders & positions | `src/engine/__tests__/reconciliation.test.ts` | Pass | Cases 1-6 + restart reconciliation verified |
-| **Bridge Order Pre-Validation** | Stops level, SL side check, volume min/max/step | `mt5-bridge/test_bridge.py` | Pass | MT5 bridge rejects invalid SL or volume before broker call |
+| **Bridge Order Pre-Validation** | Stops level, SL side check, volume min/max/step | `mt5-bridge/test_bridge.py` | UNVERIFIED | Unverified in Linux container: requires Windows MT5 desktop terminal |
 | **Bridge Deals & Cancel Pending**| `GET /deals?magic=`, `DELETE /orders/{ticket}` | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Endpoints and BridgeClient methods verified |
 | **Simulation Mode Labeling** | Unconfigured bridge labels orders & positions SIMULATED | `server.ts` & `src/components/PositionsView.tsx` | Pass | Explicit visual warning banners and SIMULATED badges |
 | **ALLOW_TRADING Bot Block** | Bridge with `ALLOW_TRADING=false` blocks DEMO/LIVE bots | `server.ts` & `src/components/BotsView.tsx` | Pass | Refuses to start bots with clear UI error message |
 | **Audit Logging** | Security and order audit trails in SQLite | `src/engine/__tests__/reconciliation.test.ts` | Pass | Log records inserted and queryable |
-| **Bridge Token Constant-Time** | Bearer auth with constant-time compare | `mt5-bridge/test_bridge.py` | Pass | Missing or mismatched token rejected |
-| **Bridge Named Demo Mode** | Compares `ACCOUNT_TRADE_MODE_DEMO` | `mt5-bridge/test_bridge.py` | Pass | Demo mode verified via named constant |
-| **Bridge Non-Demo Fail-Safe** | Treats Contest and Real as non-demo | `mt5-bridge/test_bridge.py` | Pass | Blocks non-demo orders if `ALLOW_LIVE=false` |
-| **Bridge Kill State Persistence**| Persists kill state to disk | `mt5-bridge/test_bridge.py` | Pass | Blocks new orders until `/kill/reset` called |
+| **Bridge Token Constant-Time** | Bearer auth with constant-time compare | `mt5-bridge/test_bridge.py` | UNVERIFIED | Unverified in Linux container: requires Windows MT5 desktop terminal |
+| **Bridge Named Demo Mode** | Compares `ACCOUNT_TRADE_MODE_DEMO` | `mt5-bridge/test_bridge.py` | UNVERIFIED | Unverified in Linux container: requires Windows MT5 desktop terminal |
+| **Bridge Non-Demo Fail-Safe** | Treats Contest and Real as non-demo | `mt5-bridge/test_bridge.py` | UNVERIFIED | Unverified in Linux container: requires Windows MT5 desktop terminal |
+| **Bridge Kill State Persistence**| Persists kill state to disk | `mt5-bridge/test_bridge.py` | UNVERIFIED | Unverified in Linux container: requires Windows MT5 desktop terminal |
 | **No Silent Donchian Fallback** | Throws `UNKNOWN_STRATEGY` on unregistered ID | `src/engine/__tests__/strategyExecution.test.ts` | Pass | Hardcoded if-ladder deleted; strict registry enforced |
 | **Custom Strategy Execution** | Strategy produces distinct trades vs Donchian | `src/engine/__tests__/strategyExecution.test.ts` | Pass | Custom contract runs cleanly without fallback |
 | **Hand-Calculated Benchmark** | "Buy on Bar 30" with 60 pip TP exit | `src/engine/__tests__/strategyExecution.test.ts` | Pass | Net PnL, spread, and commission match to penny |
@@ -67,7 +67,14 @@ Items in this table have automated unit/integration tests running in the test su
 | **Closed-Bar Idempotency Math**| Deterministic SHA-256 `${botId}:${symbol}:${timeframe}:${barTimestamp}:${direction}` | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Strictly prevents duplicate order execution on same bar |
 | **4-State Order Lifecycle** | `PENDING_BROKER` -> `SENT` -> `FILLED` / `REJECTED` / `UNKNOWN` | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Full SQLite state machine transitions with error reasons & audit logs |
 | **Live Gate Confirmation Token** | Single-use token with atomic CAS in SQLite | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Token consumed upon execution, prevents replay |
-| **End-to-End Bridge Routing** | Coordinated SQLite state machine and BridgeClient execution | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Transitions orders to FILLED on success, REJECTED on 4xx, UNKNOWN on timeout |
+| **Bot Runner Closed-Bar Execution** | Evaluates bots on newly closed bars with idempotency hash | `src/engine/__tests__/runnerAndRisk.test.ts` | Pass | Prevents duplicate evaluations on same bar |
+| **PAPER Bot Execution Isolation** | Fills simulated orders locally, 0 bridge calls | `src/engine/__tests__/runnerAndRisk.test.ts` | Pass | Full isolation from broker execution |
+| **DEMO Bot Account Guard** | Refuses execution if broker is non-demo (REAL/CONTEST) | `src/engine/__tests__/runnerAndRisk.test.ts` | Pass | Returns `ACCOUNT_TYPE_MISMATCH` |
+| **Strategy Error Bot Isolation** | Bot with strategy exception transitions to ERROR; peers unaffected | `src/engine/__tests__/runnerAndRisk.test.ts` | Pass | Fault isolation verified in test suite |
+| **Post-Reconciliation Bot Resume** | Bot runner refuses run until broker reconciliation passes | `src/engine/__tests__/runnerAndRisk.test.ts` | Pass | Refuses order processing if `reconciliationExecuted=false` |
+| **Risk Manager Firewall Rules** | Kill switch, SL, max lot, spread, trading hours, max positions, max risk, daily loss, drawdown, news blackout | `src/engine/__tests__/runnerAndRisk.test.ts` | Pass | All 11 rules evaluated and logged to `risk_events` |
+| **Heartbeat Watchdog Auto-Pause** | Auto-pauses bots on bridge timeout (>15s), preserves broker SL/TP | `src/engine/__tests__/runnerAndRisk.test.ts` | Pass | Transitions running bots to PAUSED, logs CRITICAL risk event |
+| **Confirmed Manual Resume** | Manual resume blocked until bridge heartbeat restored | `src/engine/__tests__/runnerAndRisk.test.ts` | Pass | Requires healthy bridge before resuming paused bots |
 
 ---
 
@@ -89,7 +96,6 @@ Features defined in the master specification scheduled for upcoming stages.
 
 | Stage | Feature Area | Description |
 | :--- | :--- | :--- |
-| **Stage 3B** | **Bot Runner & Watchdog** | Server-side bot runner with persistent interval scheduling; bridge heartbeat watchdog with auto-pause; risk manager firewall (daily max loss, max drawdown, per-trade risk). |
 | **Stage 4** | **Remove Fake Data** | Purge hardcoded mock positions and random price simulator; require explicit "SIMULATION: no broker connected" banner across UI. |
 | **Stage 5** | **Fundamental Data Module** | SQLite `macro_series`, `calendar_events`, `cot_reports`; FRED API fetcher; Forex Factory calendar feed; CFTC COT reports; news blackout rule; currency bias score. |
 | **Stage 6** | **Market Structure & Positioning**| Swing detection, BOS, CHoCH, Fair Value Gaps, Order Blocks, Liquidity Sweeps; currency strength meter; positioning analysis; signal study tool. |

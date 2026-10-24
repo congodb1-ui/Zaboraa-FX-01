@@ -51,6 +51,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [maxOpen, setMaxOpen] = useState(riskSettings.maxOpenPositionsTotal);
   const [maxSpread, setMaxSpread] = useState(riskSettings.maxAllowedSpreadPips);
   const [dailyLoss, setDailyLoss] = useState(riskSettings.maxDailyLossPct);
+  const [savedFeedback, setSavedFeedback] = useState(false);
 
   const handleTestBridge = async () => {
     setIsTestingBridge(true);
@@ -333,7 +334,12 @@ uvicorn main:app --host 127.0.0.1 --port 8001
           </div>
         </div>
 
-        <div className="flex justify-end pt-2">
+        <div className="flex items-center justify-end gap-3 pt-2">
+          {savedFeedback && (
+            <span className="text-xs font-semibold text-emerald-400">
+              ✓ Risk firewall parameters saved.
+            </span>
+          )}
           <button
             onClick={() => {
               onUpdateRiskSettings({
@@ -344,7 +350,8 @@ uvicorn main:app --host 127.0.0.1 --port 8001
                 maxAllowedSpreadPips: maxSpread,
                 maxDailyLossPct: dailyLoss,
               });
-              alert('Risk parameters saved.');
+              setSavedFeedback(true);
+              setTimeout(() => setSavedFeedback(false), 4000);
             }}
             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition-colors"
           >

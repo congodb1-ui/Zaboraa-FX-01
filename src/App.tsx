@@ -13,7 +13,7 @@ import {
   AuditLogEntry,
   DatasetRecord,
 } from './types/forex';
-import { SYMBOL_SPECS } from './services/marketData';
+import { SYMBOL_SPECS, generateHistoricalCandles } from './services/marketData';
 import { BUILT_IN_STRATEGIES } from './services/builtInStrategies';
 import { Navbar } from './components/Navbar';
 import { Sidebar, ActiveTab } from './components/Sidebar';
@@ -45,8 +45,52 @@ export default function App() {
     }
   }, []);
 
-  // Datasets initialized EMPTY by default to enforce research honesty
-  const [datasets, setDatasets] = useState<DatasetRecord[]>([]);
+  // Benchmark datasets initialized for immediate quantitative evaluation in AI Studio
+  const [datasets, setDatasets] = useState<DatasetRecord[]>(() => {
+    const eurCandles = generateHistoricalCandles('EURUSD', 'H1', 500);
+    const goldCandles = generateHistoricalCandles('XAUUSD', 'H1', 500);
+
+    return [
+      {
+        id: 'ds_benchmark_eurusd_h1',
+        symbol: 'EURUSD',
+        timeframe: 'H1',
+        rowCount: eurCandles.length,
+        fileSizeKB: Math.round(eurCandles.length * 0.045),
+        firstDate: new Date(eurCandles[0].time * 1000).toISOString().slice(0, 10),
+        lastDate: new Date(eurCandles[eurCandles.length - 1].time * 1000).toISOString().slice(0, 10),
+        provenance: {
+          source: 'SIMULATED',
+          label: 'SIMULATED',
+          details: 'Standard research benchmark generated via GBM with weekend gap modeling & realistic tick spread.',
+          isResearchEligible: true,
+          utcOffsetHours: 2,
+        },
+        candles: eurCandles,
+        qualityScore: 99,
+        lastUpdated: new Date().toISOString(),
+      },
+      {
+        id: 'ds_benchmark_xauusd_h1',
+        symbol: 'XAUUSD',
+        timeframe: 'H1',
+        rowCount: goldCandles.length,
+        fileSizeKB: Math.round(goldCandles.length * 0.045),
+        firstDate: new Date(goldCandles[0].time * 1000).toISOString().slice(0, 10),
+        lastDate: new Date(goldCandles[goldCandles.length - 1].time * 1000).toISOString().slice(0, 10),
+        provenance: {
+          source: 'SIMULATED',
+          label: 'SIMULATED',
+          details: 'Precious Metals volatility benchmark simulation with broker swap & slippage.',
+          isResearchEligible: true,
+          utcOffsetHours: 2,
+        },
+        candles: goldCandles,
+        qualityScore: 98,
+        lastUpdated: new Date().toISOString(),
+      },
+    ];
+  });
 
   // MT5 Bridge live status
   const [bridgeStatus, setBridgeStatus] = useState<{
@@ -60,96 +104,48 @@ export default function App() {
     accountType: 'DEMO',
   });
 
-  // Demo Account State
+  // Broker Account State
   const [account, setAccount] = useState<BrokerAccount>({
-    id: 'acc_exness_demo',
-    label: 'Exness MetaTrader 5 Demo',
+    id: 'acc_exness',
+    label: 'Exness MetaTrader 5',
     broker: 'Exness',
-    server: 'Exness-MT5Trial9',
-    login: '50192834',
+    server: 'Not connected (Offline)',
+    login: 'Not connected',
     mode: 'DEMO',
     symbolSuffix: 'm',
     balance: 10000.0,
-    equity: 10185.5,
-    margin: 245.0,
-    freeMargin: 9940.5,
+    equity: 10000.0,
+    margin: 0.0,
+    freeMargin: 10000.0,
     leverage: 200,
     currency: 'USD',
-    isConnected: true,
+    isConnected: false,
     isSimulated: true,
     lastHeartbeat: new Date().toISOString(),
     utcOffsetHours: 2,
   });
 
-  // Open Positions
-  const [positions, setPositions] = useState<Position[]>([
-    {
-      id: 'pos_1',
-      ticket: 10482,
-      symbol: 'EURUSD',
-      side: 'BUY',
-      volume: 0.2,
-      openPrice: 1.08340,
-      currentPrice: 1.08452,
-      sl: 1.08050,
-      tp: 1.08900,
-      pnl: 22.40,
-      pips: 11.2,
-      openTime: Math.floor(Date.now() / 1000) - 7200,
-      swap: -0.64,
-      commission: -1.40,
-      comment: 'Dual SMA Crossover Signal',
-    },
-    {
-      id: 'pos_2',
-      ticket: 10483,
-      symbol: 'XAUUSD',
-      side: 'BUY',
-      volume: 0.1,
-      openPrice: 2718.50,
-      currentPrice: 2734.25,
-      sl: 2695.00,
-      tp: 2760.00,
-      pnl: 157.50,
-      pips: 157.5,
-      openTime: Math.floor(Date.now() / 1000) - 18000,
-      swap: -1.45,
-      commission: -0.70,
-      comment: 'Gold ATR Breakout',
-    },
-  ]);
+  // Open Positions (Empty by default: no fake records)
+  const [positions, setPositions] = useState<Position[]>([]);
 
-  // Pending Orders
-  const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([
-    {
-      id: 'ord_1',
-      ticket: 20101,
-      symbol: 'GBPUSD',
-      type: 'BUY_LIMIT',
-      volume: 0.2,
-      price: 1.29500,
-      sl: 1.29150,
-      tp: 1.30200,
-      placedTime: Math.floor(Date.now() / 1000) - 1200,
-      comment: 'Pullback limit order',
-    },
-  ]);
+  // Pending Orders (Empty by default: no fake records)
+  const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([]);
 
   // Strategies
   const [strategies, setStrategies] = useState<Strategy[]>(BUILT_IN_STRATEGIES);
 
-  // Active Automated Bots
+  // Automated Bots (loaded from SQLite or clean default with 0 fake trades)
   const [bots, setBots] = useState<Bot[]>([
     {
       id: 'bot_eur_sma',
       name: 'EURUSD Trend Follower',
       strategyId: 'strat_sma_cross',
       strategyName: 'Dual SMA Dynamic Crossover',
-      accountId: '50192834',
+      accountId: 'Not connected',
       symbol: 'EURUSD',
       timeframe: 'H1',
-      mode: 'DEMO_LIVE',
-      status: 'RUNNING',
+      mode: 'PAPER',
+      status: 'PAUSED',
       params: { fastPeriod: 20, slowPeriod: 50, stopLossPips: 35, takeProfitPips: 70 },
       riskLimits: {
         maxRiskPctPerTrade: 1.5,
@@ -160,15 +156,11 @@ export default function App() {
         takeProfitPips: 70,
         maxSpreadPips: 2.0,
       },
-      todayPnl: 45.20,
-      totalPnl: 640.80,
-      tradesCount: 14,
-      lastSignal: { action: 'BUY', time: '14:00 UTC', price: 1.0834, reason: 'Fast SMA crossed Slow SMA upward' },
+      todayPnl: 0,
+      totalPnl: 0,
+      tradesCount: 0,
       lastHeartbeat: new Date().toISOString(),
-      logs: [
-        { time: '14:00:02', level: 'INFO', message: 'H1 bar closed. Signal: BUY EURUSD 0.20 lots' },
-        { time: '14:00:03', level: 'INFO', message: 'Order #10482 filled at 1.08340. SL: 1.08050, TP: 1.08900' },
-      ],
+      logs: [],
     },
   ]);
 
@@ -286,32 +278,36 @@ export default function App() {
     return false;
   };
 
-  // Live price ticker simulator for active open positions
+  // Initial system health and bots fetch
   useEffect(() => {
-    const timer = setInterval(() => {
-      setPositions((prevPositions) =>
-        prevPositions.map((pos) => {
-          const spec = SYMBOL_SPECS[pos.symbol];
-          const delta = (Math.random() - 0.495) * (spec.point * 2);
-          const newPrice = Number((pos.currentPrice + delta).toFixed(spec.digits));
-          const pips = pos.side === 'BUY'
-            ? (newPrice - pos.openPrice) / (spec.point * (spec.digits === 3 || spec.digits === 5 ? 10 : 1))
-            : (pos.openPrice - newPrice) / (spec.point * (spec.digits === 3 || spec.digits === 5 ? 10 : 1));
+    fetch('/api/health')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.brokerStatus === 'ONLINE') {
+          setBridgeStatus({
+            isOnline: true,
+            serverName: data.server,
+            accountType: data.accountType,
+          });
+          setAccount((prev) => ({
+            ...prev,
+            isConnected: true,
+            isSimulated: false,
+            server: data.server || prev.server,
+            mode: data.accountType || prev.mode,
+          }));
+        }
+      })
+      .catch(() => {});
 
-          const grossPnl = pips * spec.pipValuePerLotUSD * pos.volume;
-          const netPnl = grossPnl + pos.swap + pos.commission;
-
-          return {
-            ...pos,
-            currentPrice: newPrice,
-            pips: Number(pips.toFixed(1)),
-            pnl: Number(netPnl.toFixed(2)),
-          };
-        })
-      );
-    }, 2500);
-
-    return () => clearInterval(timer);
+    fetch('/api/bots')
+      .then((res) => res.json())
+      .then((savedBots) => {
+        if (Array.isArray(savedBots) && savedBots.length > 0) {
+          setBots(savedBots);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Sync equity with floating P&L
@@ -509,6 +505,24 @@ export default function App() {
         activeBotsCount={bots.filter((b) => b.status === 'RUNNING').length}
         onOpenKillSwitch={() => setIsKillSwitchOpen(true)}
       />
+
+      {/* Persistent Simulation Warning Banner */}
+      {!bridgeStatus.isOnline && (
+        <div className="bg-amber-500/10 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between text-xs text-amber-300">
+          <div className="flex items-center gap-2.5 font-mono">
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/40">
+              SIMULATION
+            </span>
+            <span className="font-semibold text-slate-200">
+              Not connected: simulation only.
+            </span>
+            <span className="text-amber-300/80 hidden sm:inline">
+              Real broker execution requires connecting an active MT5 bridge. Orders & data are strictly paper simulation.
+            </span>
+          </div>
+          <span className="text-[11px] font-mono text-amber-400/80">Bridge: Offline</span>
+        </div>
+      )}
 
       <div className="flex-1 flex overflow-hidden">
         <Sidebar

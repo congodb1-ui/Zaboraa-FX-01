@@ -292,7 +292,7 @@ export interface BacktestResult {
 }
 
 export type BotMode = 'PAPER' | 'DEMO_LIVE' | 'LIVE';
-export type BotStatus = 'RUNNING' | 'PAUSED' | 'STOPPED';
+export type BotStatus = 'RUNNING' | 'PAUSED' | 'STOPPED' | 'ERROR';
 
 export interface Bot {
   id: string;

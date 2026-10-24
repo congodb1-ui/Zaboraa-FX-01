@@ -81,7 +81,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
   const handleRun = async () => {
     if (!selectedStrategy) return;
     if (!activeDataset || activeDataset.candles.length === 0) {
-      alert(`Cannot run backtest: No research dataset loaded for ${symbol} (${timeframe}). Please import a CSV or fetch via MT5 Bridge.`);
+      setErrorMessage(`Cannot run backtest: No research dataset loaded for ${symbol} (${timeframe}). Please load a benchmark dataset or import a CSV in Data Manager.`);
       return;
     }
 

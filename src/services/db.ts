@@ -245,6 +245,33 @@ function initSchema(db: DatabaseSync) {
     );
   `);
 
+  // Open Positions
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS positions (
+      ticket INTEGER PRIMARY KEY,
+      bot_id TEXT,
+      magic_number INTEGER,
+      symbol TEXT NOT NULL,
+      side TEXT NOT NULL,
+      volume REAL NOT NULL,
+      open_price REAL NOT NULL,
+      current_price REAL,
+      sl REAL,
+      tp REAL,
+      pnl REAL DEFAULT 0,
+      swap REAL DEFAULT 0,
+      commission REAL DEFAULT 0,
+      open_time INTEGER NOT NULL,
+      comment TEXT,
+      is_closed INTEGER DEFAULT 0,
+      close_price REAL,
+      close_time INTEGER,
+      status TEXT DEFAULT 'OPEN',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
   // Seed default system state if empty
   const stateCheck = db.prepare('SELECT value FROM system_state WHERE key = ?').get('no_new_orders') as any;
   if (!stateCheck) {
@@ -440,7 +467,7 @@ export function updateOrderStatus(
 
 export function getPendingOrders(): OrderRecord[] {
   const db = getDb();
-  const rows = db.prepare("SELECT * FROM orders WHERE status IN ('PENDING_BROKER', 'SENT')").all() as any[];
+  const rows = db.prepare("SELECT * FROM orders WHERE status IN ('PENDING_BROKER', 'SENT', 'UNKNOWN')").all() as any[];
   return rows.map(r => ({
     id: r.id,
     idempotencyKey: r.idempotency_key,
@@ -630,6 +657,195 @@ export function updateBotStatusDb(id: string, status: string): boolean {
 export function deleteBotDb(id: string): boolean {
   const db = getDb();
   const res = db.prepare('DELETE FROM bots WHERE id = ?').run(id);
+  return Number(res.changes) > 0;
+}
+
+export function getBotById(id: string): Bot | null {
+  const db = getDb();
+  const r = db.prepare('SELECT * FROM bots WHERE id = ?').get(id) as any;
+  if (!r) return null;
+  return {
+    id: r.id,
+    name: r.name,
+    strategyId: r.strategy_id,
+    strategyName: r.strategy_name,
+    accountId: r.account_login,
+    symbol: r.symbol,
+    timeframe: r.timeframe,
+    mode: r.mode,
+    status: r.status,
+    params: JSON.parse(r.params_json || '{}'),
+    riskLimits: JSON.parse(r.risk_limits_json || '{}'),
+    todayPnl: r.today_pnl,
+    totalPnl: r.total_pnl,
+    tradesCount: r.trades_count,
+    lastSignal: r.last_signal_json ? JSON.parse(r.last_signal_json) : undefined,
+    lastHeartbeat: r.last_heartbeat || new Date().toISOString(),
+    logs: [],
+  };
+}
+
+export function getBotByMagic(magicNumber: number): Bot | null {
+  const db = getDb();
+  const r = db.prepare('SELECT * FROM bots WHERE magic_number = ?').get(magicNumber) as any;
+  if (!r) return null;
+  return {
+    id: r.id,
+    name: r.name,
+    strategyId: r.strategy_id,
+    strategyName: r.strategy_name,
+    accountId: r.account_login,
+    symbol: r.symbol,
+    timeframe: r.timeframe,
+    mode: r.mode,
+    status: r.status,
+    params: JSON.parse(r.params_json || '{}'),
+    riskLimits: JSON.parse(r.risk_limits_json || '{}'),
+    todayPnl: r.today_pnl,
+    totalPnl: r.total_pnl,
+    tradesCount: r.trades_count,
+    lastSignal: r.last_signal_json ? JSON.parse(r.last_signal_json) : undefined,
+    lastHeartbeat: r.last_heartbeat || new Date().toISOString(),
+    logs: [],
+  };
+}
+
+// ==========================================
+// POSITIONS REPOSITORY
+// ==========================================
+
+export interface DbPosition {
+  ticket: number;
+  botId?: string;
+  magicNumber?: number;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  volume: number;
+  openPrice: number;
+  currentPrice?: number;
+  sl?: number;
+  tp?: number;
+  pnl?: number;
+  swap?: number;
+  commission?: number;
+  openTime: number;
+  comment?: string;
+  isClosed?: boolean;
+  closePrice?: number;
+  closeTime?: number;
+  status?: string;
+}
+
+export function savePositionDb(pos: DbPosition): void {
+  const db = getDb();
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO positions (
+      ticket, bot_id, magic_number, symbol, side, volume,
+      open_price, current_price, sl, tp, pnl, swap, commission,
+      open_time, comment, is_closed, close_price, close_time, status,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(ticket) DO UPDATE SET
+      current_price = excluded.current_price,
+      sl = excluded.sl,
+      tp = excluded.tp,
+      pnl = excluded.pnl,
+      swap = excluded.swap,
+      commission = excluded.commission,
+      is_closed = excluded.is_closed,
+      close_price = excluded.close_price,
+      close_time = excluded.close_time,
+      status = excluded.status,
+      updated_at = excluded.updated_at
+  `).run(
+    pos.ticket,
+    pos.botId || null,
+    pos.magicNumber || null,
+    pos.symbol,
+    pos.side,
+    pos.volume,
+    pos.openPrice,
+    pos.currentPrice ?? pos.openPrice,
+    pos.sl ?? null,
+    pos.tp ?? null,
+    pos.pnl ?? 0,
+    pos.swap ?? 0,
+    pos.commission ?? 0,
+    pos.openTime,
+    pos.comment || null,
+    pos.isClosed ? 1 : 0,
+    pos.closePrice ?? null,
+    pos.closeTime ?? null,
+    pos.status || 'OPEN',
+    now,
+    now
+  );
+}
+
+export function getOpenPositionsDb(): DbPosition[] {
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM positions WHERE is_closed = 0').all() as any[];
+  return rows.map(r => ({
+    ticket: r.ticket,
+    botId: r.bot_id || undefined,
+    magicNumber: r.magic_number ?? undefined,
+    symbol: r.symbol,
+    side: r.side,
+    volume: r.volume,
+    openPrice: r.open_price,
+    currentPrice: r.current_price,
+    sl: r.sl ?? undefined,
+    tp: r.tp ?? undefined,
+    pnl: r.pnl,
+    swap: r.swap,
+    commission: r.commission,
+    openTime: r.open_time,
+    comment: r.comment || undefined,
+    isClosed: false,
+    status: r.status,
+  }));
+}
+
+export function getPositionByTicketDb(ticket: number): DbPosition | null {
+  const db = getDb();
+  const r = db.prepare('SELECT * FROM positions WHERE ticket = ?').get(ticket) as any;
+  if (!r) return null;
+  return {
+    ticket: r.ticket,
+    botId: r.bot_id || undefined,
+    magicNumber: r.magic_number ?? undefined,
+    symbol: r.symbol,
+    side: r.side,
+    volume: r.volume,
+    openPrice: r.open_price,
+    currentPrice: r.current_price,
+    sl: r.sl ?? undefined,
+    tp: r.tp ?? undefined,
+    pnl: r.pnl,
+    swap: r.swap,
+    commission: r.commission,
+    openTime: r.open_time,
+    comment: r.comment || undefined,
+    isClosed: r.is_closed === 1,
+    closePrice: r.close_price ?? undefined,
+    closeTime: r.close_time ?? undefined,
+    status: r.status,
+  };
+}
+
+export function closePositionDb(
+  ticket: number,
+  closePrice: number,
+  closeTime: number,
+  pnl: number = 0
+): boolean {
+  const db = getDb();
+  const res = db.prepare(`
+    UPDATE positions
+    SET is_closed = 1, close_price = ?, close_time = ?, pnl = ?, status = 'CLOSED', updated_at = ?
+    WHERE ticket = ?
+  `).run(closePrice, closeTime, pnl, new Date().toISOString(), ticket);
   return Number(res.changes) > 0;
 }
 

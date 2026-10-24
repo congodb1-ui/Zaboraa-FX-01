@@ -167,3 +167,187 @@ def test_kill_switch_and_state_persistence():
     reset_resp = client.post("/kill/reset", headers=AUTH_HEADER)
     assert reset_resp.status_code == 200
     assert reset_resp.json()["kill_state_engaged"] is False
+
+
+def test_order_sl_wrong_side_buy():
+    # BUY with SL above or equal to market price (ask=1.0850)
+    mock_tick = MagicMock()
+    mock_tick.ask = 1.0850
+    mock_tick.bid = 1.0845
+    mock_mt5.symbol_info_tick.return_value = mock_tick
+
+    resp = client.post(
+        "/orders",
+        json={"symbol": "EURUSD", "side": "BUY", "volume": 0.1, "sl": 1.0860},
+        headers=AUTH_HEADER
+    )
+    assert resp.status_code == 400
+    assert "Stop-loss must be below current market price for BUY orders" in resp.json()["detail"]
+
+
+def test_order_sl_wrong_side_sell():
+    # SELL with SL below or equal to market price (bid=1.0845)
+    mock_tick = MagicMock()
+    mock_tick.ask = 1.0850
+    mock_tick.bid = 1.0845
+    mock_mt5.symbol_info_tick.return_value = mock_tick
+
+    resp = client.post(
+        "/orders",
+        json={"symbol": "EURUSD", "side": "SELL", "volume": 0.1, "sl": 1.0830},
+        headers=AUTH_HEADER
+    )
+    assert resp.status_code == 400
+    assert "Stop-loss must be above current market price for SELL orders" in resp.json()["detail"]
+
+
+def test_order_sl_violates_stops_level():
+    mock_tick = MagicMock()
+    mock_tick.ask = 1.08500
+    mock_tick.bid = 1.08450
+    mock_mt5.symbol_info_tick.return_value = mock_tick
+
+    mock_info = MagicMock()
+    mock_info.name = "EURUSD"
+    mock_info.point = 0.00001
+    mock_info.trade_stops_level = 30 # 30 points = 0.00030 distance required
+    mock_info.volume_min = 0.01
+    mock_info.volume_max = 100.0
+    mock_info.volume_step = 0.01
+    mock_info.filling_mode = 1
+    mock_mt5.symbol_info.return_value = mock_info
+
+    # BUY at 1.08500 with SL at 1.08490 (distance is only 10 points < 30 points)
+    resp = client.post(
+        "/orders",
+        json={"symbol": "EURUSD", "side": "BUY", "volume": 0.1, "sl": 1.08490},
+        headers=AUTH_HEADER
+    )
+    assert resp.status_code == 400
+    assert "Minimum distance is 30 points" in resp.json()["detail"]
+
+
+def test_order_volume_validation():
+    mock_info = MagicMock()
+    mock_info.name = "EURUSD"
+    mock_info.point = 0.00001
+    mock_info.trade_stops_level = 0
+    mock_info.volume_min = 0.05
+    mock_info.volume_max = 50.0
+    mock_info.volume_step = 0.05
+    mock_info.filling_mode = 1
+    mock_mt5.symbol_info.return_value = mock_info
+
+    mock_tick = MagicMock()
+    mock_tick.ask = 1.08500
+    mock_tick.bid = 1.08450
+    mock_mt5.symbol_info_tick.return_value = mock_tick
+
+    # Below min volume
+    resp_min = client.post(
+        "/orders",
+        json={"symbol": "EURUSD", "side": "BUY", "volume": 0.01, "sl": 1.0800},
+        headers=AUTH_HEADER
+    )
+    assert resp_min.status_code == 400
+    assert "below minimum allowed" in resp_min.json()["detail"]
+
+    # Exceeds max volume
+    resp_max = client.post(
+        "/orders",
+        json={"symbol": "EURUSD", "side": "BUY", "volume": 60.0, "sl": 1.0800},
+        headers=AUTH_HEADER
+    )
+    assert resp_max.status_code == 400
+    assert "exceeds maximum allowed" in resp_max.json()["detail"]
+
+    # Invalid volume step
+    resp_step = client.post(
+        "/orders",
+        json={"symbol": "EURUSD", "side": "BUY", "volume": 0.08, "sl": 1.0800},
+        headers=AUTH_HEADER
+    )
+    assert resp_step.status_code == 400
+    assert "does not match volume step" in resp_step.json()["detail"]
+
+
+def test_order_comment_truncation_and_magic():
+    mock_info = MagicMock()
+    mock_info.name = "EURUSD"
+    mock_info.point = 0.00001
+    mock_info.trade_stops_level = 0
+    mock_info.volume_min = 0.01
+    mock_info.volume_max = 100.0
+    mock_info.volume_step = 0.01
+    mock_info.filling_mode = 1
+    mock_mt5.symbol_info.return_value = mock_info
+
+    mock_tick = MagicMock()
+    mock_tick.ask = 1.08500
+    mock_tick.bid = 1.08450
+    mock_mt5.symbol_info_tick.return_value = mock_tick
+
+    mock_res = MagicMock()
+    mock_res.retcode = mock_mt5.TRADE_RETCODE_DONE
+    mock_res.order = 998811
+    mock_res.price = 1.08500
+    mock_res.volume = 0.1
+    mock_mt5.order_send.return_value = mock_res
+
+    long_comment = "This is a super long comment exceeding 25 characters easily"
+    resp = client.post(
+        "/order",
+        json={
+            "symbol": "EURUSD",
+            "side": "BUY",
+            "volume": 0.1,
+            "sl": 1.0800,
+            "magic": 10482,
+            "comment": long_comment
+        },
+        headers=AUTH_HEADER
+    )
+    assert resp.status_code == 200
+    # Inspect arguments passed to mock_mt5.order_send
+    req = mock_mt5.order_send.call_args[0][0]
+    assert req["magic"] == 10482
+    assert len(req["comment"]) <= 25
+    assert req["comment"] == long_comment[:25]
+
+
+def test_deals_endpoint_filtering():
+    deal_1 = MagicMock()
+    deal_1._asdict.return_value = {"ticket": 1001, "magic": 10482, "price": 1.0850, "profit": 25.0}
+    deal_2 = MagicMock()
+    deal_2._asdict.return_value = {"ticket": 1002, "magic": 99999, "price": 1.0820, "profit": -10.0}
+
+    mock_mt5.history_deals_get.return_value = [deal_1, deal_2]
+
+    # Query without filter
+    resp_all = client.get("/deals", headers=AUTH_HEADER)
+    assert resp_all.status_code == 200
+    assert len(resp_all.json()) == 2
+
+    # Query with magic=10482
+    resp_filtered = client.get("/deals?magic=10482", headers=AUTH_HEADER)
+    assert resp_filtered.status_code == 200
+    data = resp_filtered.json()
+    assert len(data) == 1
+    assert data[0]["magic"] == 10482
+
+
+def test_cancel_pending_order():
+    mock_res = MagicMock()
+    mock_res.retcode = mock_mt5.TRADE_RETCODE_DONE
+    mock_mt5.order_send.return_value = mock_res
+
+    resp = client.delete("/orders/70105", headers=AUTH_HEADER)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "SUCCESS"
+    assert resp.json()["ticket"] == 70105
+
+    # Verify MT5 called with TRADE_ACTION_REMOVE
+    req = mock_mt5.order_send.call_args[0][0]
+    assert req["action"] == mock_mt5.TRADE_ACTION_REMOVE
+    assert req["order"] == 70105
+

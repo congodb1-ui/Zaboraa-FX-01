@@ -4,7 +4,7 @@ import path from 'path';
 import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
-  const isPreview = process.env.AI_STUDIO_PREVIEW === 'true' || !!process.env.AISTUDIO_BUILD_ENV || !!process.env.PORT;
+  const isPreview = process.env.AI_STUDIO_PREVIEW === 'true';
 
   return {
     plugins: [react(), tailwindcss()],
@@ -16,7 +16,7 @@ export default defineConfig(() => {
     server: {
       host: isPreview ? '0.0.0.0' : '127.0.0.1',
       port: 3000,
-      allowedHosts: (isPreview ? true : ['127.0.0.1', 'localhost']) as true | string[],
+      allowedHosts: isPreview ? (true as const) : ['127.0.0.1', 'localhost'],
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',

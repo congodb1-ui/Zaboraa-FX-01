@@ -5,7 +5,7 @@ In accordance with Ground Rule 3 and Stage 0/1 requirements:
 - **Never mark something as implemented unless an automated unit/integration test or verified live bridge execution proves it.**
 - When no bridge is connected, all operational features run in simulated mode with explicit labels.
 
-*Last Updated*: Stage 3A Completed (Bridge Client, 4-State Order Lifecycle, Closed-Bar Idempotency)
+*Last Updated*: Stage 3A-Fix Completed (Real Order Path, 6-Case Broker Reconciliation, Bridge Validation, Zero-Retry Order Send)
 
 ---
 
@@ -36,7 +36,12 @@ Items in this table have automated unit/integration tests running in the test su
 | **Kill Switch: Verified Flat** | Verifies empty positions before success | `src/engine/__tests__/safety.test.ts` | Pass | Reports `FLAT_VERIFIED` only if `/positions` is empty |
 | **Kill Switch: Simulation Mode** | Fallback when bridge unconfigured | `src/engine/__tests__/safety.test.ts` | Pass | Returns `simulation: true`, never claims flat |
 | **Order Idempotency** | Prevents duplicate orders per interval | `src/engine/__tests__/reconciliation.test.ts` | Pass | SQLite UNIQUE constraint rejects duplicate |
-| **Startup Reconciliation** | Orphaned order resolution upon restart | `src/engine/__tests__/reconciliation.test.ts` | Pass | Resolves pending orders to `UNKNOWN` on boot |
+| **Zero-Retry Order Send** | Exactly 1 attempt on sendOrder (0 retries) | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Network/5xx leaves order UNKNOWN; prevents double executions |
+| **6-Case Broker Reconciliation** | Full bidirectional engine for orders & positions | `src/engine/__tests__/reconciliation.test.ts` | Pass | Cases 1-6 + restart reconciliation verified |
+| **Bridge Order Pre-Validation** | Stops level, SL side check, volume min/max/step | `mt5-bridge/test_bridge.py` | Pass | MT5 bridge rejects invalid SL or volume before broker call |
+| **Bridge Deals & Cancel Pending**| `GET /deals?magic=`, `DELETE /orders/{ticket}` | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Endpoints and BridgeClient methods verified |
+| **Simulation Mode Labeling** | Unconfigured bridge labels orders & positions SIMULATED | `server.ts` & `src/components/PositionsView.tsx` | Pass | Explicit visual warning banners and SIMULATED badges |
+| **ALLOW_TRADING Bot Block** | Bridge with `ALLOW_TRADING=false` blocks DEMO/LIVE bots | `server.ts` & `src/components/BotsView.tsx` | Pass | Refuses to start bots with clear UI error message |
 | **Audit Logging** | Security and order audit trails in SQLite | `src/engine/__tests__/reconciliation.test.ts` | Pass | Log records inserted and queryable |
 | **Bridge Token Constant-Time** | Bearer auth with constant-time compare | `mt5-bridge/test_bridge.py` | Pass | Missing or mismatched token rejected |
 | **Bridge Named Demo Mode** | Compares `ACCOUNT_TRADE_MODE_DEMO` | `mt5-bridge/test_bridge.py` | Pass | Demo mode verified via named constant |

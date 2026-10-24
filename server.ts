@@ -35,7 +35,10 @@ import {
   isJobCancelledDb,
   getCachedAi,
   setCachedAi,
+  getBotById,
 } from './src/services/db';
+import { BridgeClient, executeOrderThroughBridge } from './src/services/bridgeClient';
+import { reconcileWithBroker } from './src/engine/reconciliation';
 import {
   savePartitionedCandles,
   loadPartitionedCandles,
@@ -57,7 +60,7 @@ const __dirname = path.dirname(__filename);
 
 export const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-const isPreview = process.env.AI_STUDIO_PREVIEW === 'true' || !!process.env.AISTUDIO_BUILD_ENV || !!process.env.PORT;
+const isPreview = process.env.AI_STUDIO_PREVIEW === 'true';
 const rawHost = process.env.HOST ? process.env.HOST.split('#')[0].trim() : '';
 const HOST = rawHost || (isPreview ? '0.0.0.0' : '127.0.0.1');
 const isProduction = process.env.NODE_ENV === 'production';
@@ -241,14 +244,30 @@ let brokerState = {
   lastHeartbeat: new Date().toISOString(),
 };
 
-// Startup Reconciliation: Check stranded pending orders in SQLite
-function reconcileStartupOrders() {
+// Startup and Periodic Reconciliation
+export async function runSystemReconciliation(): Promise<any> {
+  const bridgeUrl = process.env.BRIDGE_URL;
+  if (bridgeUrl) {
+    try {
+      const bridgeClient = new BridgeClient({
+        baseUrl: bridgeUrl,
+        token: process.env.BRIDGE_TOKEN,
+      });
+      const report = await reconcileWithBroker(bridgeClient);
+      return report;
+    } catch (err: any) {
+      if (process.env.NODE_ENV !== 'test') {
+        console.warn(`[RECONCILIATION] Broker bridge unreachable, applying local reconciliation: ${err?.message}`);
+      }
+    }
+  }
+
+  // Fallback local reconciliation: Check stranded pending orders in SQLite
   try {
     const pending = getPendingOrders();
     if (pending.length > 0) {
-      console.log(`[STARTUP RECONCILIATION] Found ${pending.length} unresolved pending orders in SQLite. Resolving...`);
       for (const ord of pending) {
-        updateOrderStatus(ord.id, 'UNKNOWN', undefined, undefined, 'Reconciled on server restart');
+        updateOrderStatus(ord.id, 'UNKNOWN', undefined, undefined, 'Reconciled on server restart without broker connection');
         insertAuditLog({
           id: `aud_recon_${Date.now()}_${ord.id}`,
           timestamp: new Date().toISOString(),
@@ -264,7 +283,7 @@ function reconcileStartupOrders() {
     console.error('Error during startup order reconciliation:', err);
   }
 }
-reconcileStartupOrders();
+runSystemReconciliation();
 
 // ==========================================
 // 1. HEALTH & BROKER STATUS
@@ -535,28 +554,64 @@ app.post('/api/broker/order', async (req, res) => {
     throw err;
   }
 
-  const mockTicket = Math.floor(100000 + Math.random() * 900000);
-  const fillPrice = orderRecord.intentPrice > 0 ? orderRecord.intentPrice : (effectiveSide === 'BUY' ? 1.0845 : 1.0840);
-  updateOrderStatus(orderId, 'FILLED', mockTicket, fillPrice);
+  // If bridge URL is configured, route order through executeOrderThroughBridge
+  if (process.env.BRIDGE_URL) {
+    const bridgeClient = new BridgeClient({
+      baseUrl: process.env.BRIDGE_URL,
+      token: process.env.BRIDGE_TOKEN,
+    });
+
+    const execution = await executeOrderThroughBridge(bridgeClient, orderRecord, {
+      botMode: authoritativeMode === 'REAL' ? 'LIVE' : 'DEMO_LIVE',
+      liveToken,
+      accountLogin: brokerState.login,
+      riskLimits,
+    });
+
+    if (!execution.success) {
+      return res.status(execution.order.status === 'REJECTED' ? 400 : 502).json({
+        success: false,
+        error: execution.error || `Order dispatch resulted in status ${execution.order.status}`,
+        order: execution.order,
+        status: execution.order.status,
+      });
+    }
+
+    return res.json({
+      success: true,
+      orderId: execution.order.id,
+      ticket: execution.order.ticket,
+      fillPrice: execution.order.fillPrice,
+      status: execution.order.status,
+      mode: authoritativeMode,
+      comment: execution.order.comment,
+    });
+  }
+
+  // Simulation Labelling: With no bridge configured, orders get status SIMULATED and never count as real fills
+  const simFillPrice = orderRecord.intentPrice > 0 ? orderRecord.intentPrice : (effectiveSide === 'BUY' ? 1.0845 : 1.0840);
+  updateOrderStatus(orderId, 'SIMULATED', undefined, simFillPrice, 'SIMULATION: no broker connected');
 
   insertAuditLog({
-    id: `aud_ord_${Date.now()}`,
+    id: `aud_ord_sim_${Date.now()}`,
     timestamp: new Date().toISOString(),
-    actor: authoritativeMode === 'REAL' ? 'Live Bot' : 'Demo Bot',
-    action: 'ORDER_FILLED',
-    entity: `${symbol} #${mockTicket}`,
-    details: `${effectiveSide} ${effectiveVolume} lots at ${fillPrice}. SL: ${sl}, TP: ${tp || 'None'}. Mode: ${authoritativeMode}`,
-    status: 'SUCCESS',
+    actor: 'Simulation Engine',
+    action: 'ORDER_SIMULATED',
+    entity: `${symbol} (No Broker Connected)`,
+    details: `SIMULATED order placed without broker connection. Side: ${effectiveSide}, Volume: ${effectiveVolume}, Price: ${simFillPrice}`,
+    status: 'WARNING',
   });
 
   res.json({
     success: true,
+    simulation: true,
     orderId,
-    ticket: mockTicket,
-    fillPrice,
-    status: 'FILLED',
-    mode: authoritativeMode,
-    comment: shortComment,
+    ticket: undefined,
+    fillPrice: simFillPrice,
+    status: 'SIMULATED',
+    mode: 'DEMO',
+    message: 'SIMULATION: no broker connected',
+    comment: `${shortComment}_SIM`,
   });
 });
 
@@ -1235,14 +1290,66 @@ app.post('/api/bots', (req, res) => {
   }
 });
 
-app.post('/api/bots/:id/status', (req, res) => {
+app.post('/api/bots/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
     if (!status) {
       return res.status(400).json({ error: 'status is required' });
     }
+
+    if (status === 'RUNNING') {
+      const bot = getBotById(req.params.id);
+      if (bot && (bot.mode === 'DEMO_LIVE' || bot.mode === 'LIVE')) {
+        const bridgeUrl = process.env.BRIDGE_URL;
+        if (bridgeUrl) {
+          try {
+            const bridgeClient = new BridgeClient({
+              baseUrl: bridgeUrl,
+              token: process.env.BRIDGE_TOKEN,
+            });
+            const health = await bridgeClient.getHealth();
+            if (health.allow_trading === false) {
+              return res.status(403).json({
+                error: 'ALLOW_TRADING_DISABLED: mt5-bridge is running in read-only mode (ALLOW_TRADING=false). DEMO and LIVE bots cannot be started.',
+              });
+            }
+          } catch (err: any) {
+            if (err?.code === 'BRIDGE_FORBIDDEN' || err?.message?.includes('ALLOW_TRADING=false')) {
+              return res.status(403).json({
+                error: 'ALLOW_TRADING_DISABLED: mt5-bridge is running in read-only mode (ALLOW_TRADING=false). DEMO and LIVE bots cannot be started.',
+              });
+            }
+          }
+        }
+      }
+    }
+
     const updated = updateBotStatusDb(req.params.id, status);
     res.json({ success: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/reconciliation', async (req, res) => {
+  try {
+    const { autoCloseMissingSl, gracePeriodSeconds } = req.body || {};
+    const bridgeUrl = process.env.BRIDGE_URL;
+    if (!bridgeUrl) {
+      return res.json({
+        success: true,
+        simulation: true,
+        message: 'SIMULATION: no broker connected for reconciliation',
+        report: { ordersFilled: 0, ordersFailed: 0, positionsAdopted: 0, orphanPositions: 0, positionsClosed: 0, missingSlPositions: 0, details: [] },
+      });
+    }
+
+    const bridgeClient = new BridgeClient({
+      baseUrl: bridgeUrl,
+      token: process.env.BRIDGE_TOKEN,
+    });
+    const report = await reconcileWithBroker(bridgeClient, { autoCloseMissingSl, gracePeriodSeconds });
+    res.json({ success: true, report });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

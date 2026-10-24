@@ -461,13 +461,25 @@ export default function App() {
     }).catch(() => {});
   };
 
-  const handleUpdateBotStatus = (id: string, status: Bot['status']) => {
-    setBots((prev) => prev.map((b) => (b.id === id ? { ...b, status } : b)));
-    fetch(`/api/bots/${id}/status`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    }).catch(() => {});
+  const [botErrorBanner, setBotErrorBanner] = useState<string | null>(null);
+
+  const handleUpdateBotStatus = async (id: string, status: Bot['status']) => {
+    try {
+      const res = await fetch(`/api/bots/${id}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setBotErrorBanner(data.error || 'Failed to update bot status. Verify broker permissions.');
+        return;
+      }
+      setBotErrorBanner(null);
+      setBots((prev) => prev.map((b) => (b.id === id ? { ...b, status } : b)));
+    } catch (err: any) {
+      setBotErrorBanner(`Network error updating bot status: ${err.message}`);
+    }
   };
 
   const handleCreateBot = (newBot: Bot) => {
@@ -588,6 +600,8 @@ export default function App() {
               bots={bots}
               strategies={strategies}
               account={account}
+              errorMessage={botErrorBanner}
+              onDismissError={() => setBotErrorBanner(null)}
               onUpdateBotStatus={handleUpdateBotStatus}
               onCreateBot={handleCreateBot}
             />
@@ -597,6 +611,7 @@ export default function App() {
             <PositionsView
               positions={positions}
               pendingOrders={pendingOrders}
+              isBrokerConnected={bridgeStatus.isOnline}
               onClosePosition={handleClosePosition}
               onModifyPosition={handleModifyPosition}
               onCancelPendingOrder={(ticket) => {

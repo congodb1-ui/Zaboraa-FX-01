@@ -380,7 +380,15 @@ export interface PineConversionResponse {
   };
 }
 
-export type OrderStatus = 'PENDING_BROKER' | 'SENT' | 'FILLED' | 'REJECTED' | 'UNKNOWN';
+export type OrderStatus =
+  | 'PENDING_BROKER'
+  | 'SENT'
+  | 'FILLED'
+  | 'REJECTED'
+  | 'UNKNOWN'
+  | 'CANCELLED'
+  | 'SIMULATED'
+  | 'FAILED';
 
 export interface OrderRecord {
   id: string;

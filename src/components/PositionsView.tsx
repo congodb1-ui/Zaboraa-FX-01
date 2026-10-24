@@ -5,6 +5,7 @@ import { Layers, XCircle, Edit3, ShieldAlert, Clock, ArrowUpRight, ArrowDownRigh
 interface PositionsViewProps {
   positions: Position[];
   pendingOrders: PendingOrder[];
+  isBrokerConnected?: boolean;
   onClosePosition: (ticket: number) => void;
   onModifyPosition: (ticket: number, sl?: number, tp?: number) => void;
   onCancelPendingOrder: (ticket: number) => void;
@@ -13,6 +14,7 @@ interface PositionsViewProps {
 export const PositionsView: React.FC<PositionsViewProps> = ({
   positions,
   pendingOrders,
+  isBrokerConnected = false,
   onClosePosition,
   onModifyPosition,
   onCancelPendingOrder,
@@ -40,6 +42,18 @@ export const PositionsView: React.FC<PositionsViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Simulation Notice Banner */}
+      {!isBrokerConnected && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 px-4 flex items-center justify-between text-xs text-amber-300">
+          <div className="flex items-center gap-2 font-mono">
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/40">
+              SIMULATED
+            </span>
+            <span>SIMULATION: no broker connected. Orders and positions run in simulated paper mode.</span>
+          </div>
+        </div>
+      )}
+
       {/* Header Strip */}
       <div className="flex flex-wrap items-center justify-between gap-4 bg-[#0D1322] border border-slate-800 rounded-xl p-5 shadow-sm">
         <div className="flex items-center gap-3">
@@ -47,7 +61,14 @@ export const PositionsView: React.FC<PositionsViewProps> = ({
             <Layers className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-sm font-bold text-white tracking-tight">Active Market Exposure</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-bold text-white tracking-tight">Active Market Exposure</h2>
+              {!isBrokerConnected && (
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-400 font-mono border border-amber-500/30">
+                  SIMULATED
+                </span>
+              )}
+            </div>
             <div className="text-xs text-slate-400 font-mono mt-0.5">
               Floating P&L:{' '}
               <strong className={`tabular-nums ${totalFloatingPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
@@ -109,7 +130,14 @@ export const PositionsView: React.FC<PositionsViewProps> = ({
                     return (
                       <tr key={pos.id} className="hover:bg-slate-800/30 transition-colors">
                         <td className="py-2.5 px-3 text-slate-400">#{pos.ticket}</td>
-                        <td className="py-2.5 px-3 font-bold text-white">{pos.symbol}</td>
+                        <td className="py-2.5 px-3 font-bold text-white flex items-center gap-1.5">
+                          <span>{pos.symbol}</span>
+                          {(!isBrokerConnected || pos.comment?.includes('SIM') || pos.comment?.includes('simulated')) && (
+                            <span className="px-1 py-0.2 rounded text-[9px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                              SIMULATED
+                            </span>
+                          )}
+                        </td>
                         <td className="py-2.5 px-3">
                           <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
                             pos.side === 'BUY' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'

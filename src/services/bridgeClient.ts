@@ -7,6 +7,7 @@ import {
   consumeLiveToken,
   insertAuditLog,
   insertRiskEvent,
+  savePositionDb,
 } from './db';
 import { OrderRecord, OrderStatus, SymbolName } from '../types/forex';
 
@@ -131,6 +132,29 @@ export interface BridgeKillResponse {
   timestamp: string;
 }
 
+export interface BridgeDeal {
+  ticket: number;
+  order: number;
+  time: number;
+  type: number; // 0 = BUY, 1 = SELL
+  entry: number; // 0 = ENTRY_IN, 1 = ENTRY_OUT
+  magic: number;
+  position_id: number;
+  volume: number;
+  price: number;
+  commission: number;
+  swap: number;
+  profit: number;
+  symbol: string;
+  comment: string;
+}
+
+export interface BridgeCancelPendingResponse {
+  status: string;
+  message: string;
+  ticket: number;
+}
+
 export interface BridgeResetKillResponse {
   success: boolean;
   kill_state_engaged: boolean;
@@ -192,7 +216,8 @@ export class BridgeClient {
   private async request<T>(
     endpoint: string,
     method: 'GET' | 'POST' | 'DELETE' = 'GET',
-    body?: any
+    body?: any,
+    maxRetriesOverride?: number
   ): Promise<T> {
     if (!this.token) {
       throw new BridgeError(
@@ -204,8 +229,9 @@ export class BridgeClient {
 
     const url = `${this.baseUrl}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
     let lastError: any = null;
+    const maxAttempts = maxRetriesOverride !== undefined ? maxRetriesOverride : this.maxRetries;
 
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxAttempts; attempt++) {
       const controller = new AbortController();
       let timeoutId: any = null;
 
@@ -287,7 +313,7 @@ export class BridgeClient {
           lastError = new BridgeError(
             408,
             'BRIDGE_TIMEOUT',
-            `Bridge request to ${endpoint} timed out after ${this.timeoutMs}ms (attempt ${attempt + 1}/${this.maxRetries + 1})`
+            `Bridge request to ${endpoint} timed out after ${this.timeoutMs}ms (attempt ${attempt + 1}/${maxAttempts + 1})`
           );
         } else {
           lastError = new BridgeError(
@@ -300,7 +326,7 @@ export class BridgeClient {
       }
 
       // If we have retries remaining, wait with exponential backoff + jitter
-      if (attempt < this.maxRetries) {
+      if (attempt < maxAttempts) {
         const backoff = this.initialRetryDelayMs * Math.pow(2, attempt);
         const jitter = Math.floor(Math.random() * 20);
         await new Promise((resolve) => setTimeout(resolve, backoff + jitter));
@@ -335,6 +361,15 @@ export class BridgeClient {
     return this.request<BridgePositionResponse[]>('/positions', 'GET');
   }
 
+  public async getDeals(magic?: number, fromDate?: number, toDate?: number): Promise<BridgeDeal[]> {
+    const params = new URLSearchParams();
+    if (magic !== undefined) params.set('magic', String(magic));
+    if (fromDate !== undefined) params.set('from_date', String(fromDate));
+    if (toDate !== undefined) params.set('to_date', String(toDate));
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return this.request<BridgeDeal[]>(`/deals${qs}`, 'GET');
+  }
+
   public async sendOrder(req: BridgeOrderRequest): Promise<BridgeOrderResponse> {
     if (!req.sl || req.sl <= 0) {
       throw new BridgeError(
@@ -343,7 +378,12 @@ export class BridgeClient {
         'MANDATORY_STOP_LOSS_REQUIRED: Every order dispatched to bridge must specify a positive Stop-Loss price.'
       );
     }
-    return this.request<BridgeOrderResponse>('/orders', 'POST', req);
+    // sendOrder: exactly one attempt (0 retries). Must never auto-retry on 5xx or disconnects to avoid broker duplicates.
+    return this.request<BridgeOrderResponse>('/orders', 'POST', req, 0);
+  }
+
+  public async cancelPending(ticket: number): Promise<BridgeCancelPendingResponse> {
+    return this.request<BridgeCancelPendingResponse>(`/orders/${ticket}`, 'DELETE');
   }
 
   public async closePosition(ticket: number): Promise<BridgeCloseResponse> {
@@ -569,10 +609,35 @@ export async function executeOrderThroughBridge(
       price: order.intentPrice,
     });
 
-    const ticket = bridgeResp.ticket || Math.floor(100000 + Math.random() * 900000);
-    const fillPrice = bridgeResp.fill_price || (order.intentPrice > 0 ? order.intentPrice : (order.side === 'BUY' ? 1.085 : 1.0845));
+    if (!bridgeResp.ticket || bridgeResp.fill_price === undefined) {
+      const unknown = transitionOrderUnknown(
+        order.id,
+        `Bridge response missing authoritative ticket or fill price: ${JSON.stringify(bridgeResp)}`
+      );
+      return { success: false, order: unknown, error: 'Missing authoritative ticket or fill price from broker' };
+    }
 
+    const ticket = bridgeResp.ticket;
+    const fillPrice = bridgeResp.fill_price;
     const filledOrder = transitionOrderFilled(order.id, ticket, fillPrice);
+
+    // Record position in SQLite
+    savePositionDb({
+      ticket,
+      botId: order.botId,
+      magicNumber: order.magicNumber,
+      symbol: order.symbol,
+      side: order.side,
+      volume: order.volume,
+      openPrice: fillPrice,
+      currentPrice: fillPrice,
+      sl: order.sl,
+      tp: order.tp,
+      openTime: Math.floor(Date.now() / 1000),
+      comment: order.comment,
+      status: 'OPEN',
+    });
+
     return {
       success: true,
       order: filledOrder,
@@ -580,21 +645,26 @@ export async function executeOrderThroughBridge(
     };
   } catch (err: any) {
     if (err instanceof BridgeError) {
-      // 4xx or 403 Forbidden is a definite rejection
-      if (err.statusCode === 400 || err.statusCode === 403 || err.code === 'BRIDGE_BAD_REQUEST' || err.code === 'BRIDGE_FORBIDDEN') {
+      // Clear 4xx client errors (400 Bad Request, 403 Forbidden, 401 Unauthorized) map to REJECTED.
+      // 408 Timeout is ambiguous and MUST map to UNKNOWN.
+      if (
+        err.statusCode !== 408 &&
+        ((err.statusCode >= 400 && err.statusCode < 500) ||
+          err.code === 'BRIDGE_BAD_REQUEST' ||
+          err.code === 'BRIDGE_FORBIDDEN' ||
+          err.code === 'BRIDGE_UNAUTHORIZED')
+      ) {
         const rejected = transitionOrderRejected(order.id, err.message);
         return { success: false, order: rejected, error: err.message };
       }
 
-      // Timeouts and network disconnects leave order in UNKNOWN state
-      if (err.code === 'BRIDGE_TIMEOUT' || err.code === 'BRIDGE_UNREACHABLE') {
-        const unknown = transitionOrderUnknown(order.id, err.message);
-        return { success: false, order: unknown, error: err.message };
-      }
+      // 5xx errors, timeouts (408), and network disconnects (503) must leave order UNKNOWN
+      const unknown = transitionOrderUnknown(order.id, err.message);
+      return { success: false, order: unknown, error: err.message };
     }
 
-    // Default failure: transition to REJECTED or UNKNOWN depending on error
-    const reason = err.message || 'Unknown bridge dispatch failure';
+    // Default network or system failure: transition to UNKNOWN to be resolved by reconciliation
+    const reason = err?.message || 'Unknown bridge dispatch failure';
     const finalOrder = transitionOrderUnknown(order.id, reason);
     return { success: false, order: finalOrder, error: reason };
   }

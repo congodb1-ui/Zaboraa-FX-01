@@ -19,6 +19,8 @@ interface BotsViewProps {
   bots: Bot[];
   strategies: Strategy[];
   account: BrokerAccount;
+  errorMessage?: string | null;
+  onDismissError?: () => void;
   onUpdateBotStatus: (botId: string, newStatus: 'RUNNING' | 'PAUSED' | 'STOPPED') => void;
   onCreateBot: (newBot: Bot) => void;
 }
@@ -27,6 +29,8 @@ export const BotsView: React.FC<BotsViewProps> = ({
   bots,
   strategies,
   account,
+  errorMessage,
+  onDismissError,
   onUpdateBotStatus,
   onCreateBot,
 }) => {
@@ -119,6 +123,24 @@ export const BotsView: React.FC<BotsViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Trading Disabled / Action Error Banner */}
+      {errorMessage && (
+        <div className="bg-rose-500/15 border border-rose-500/40 rounded-xl p-4 flex items-center justify-between text-xs text-rose-300 font-mono shadow-lg">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>{errorMessage}</span>
+          </div>
+          {onDismissError && (
+            <button
+              onClick={onDismissError}
+              className="text-slate-400 hover:text-white text-[11px] px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 transition-colors"
+            >
+              Dismiss
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Top Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 bg-[#0D1322] border border-slate-800 rounded-xl p-5 shadow-sm">
         <div>

@@ -665,5 +665,70 @@ describe('MT5 Bridge Client & Order Lifecycle Tests (Stage 3A)', () => {
       expect(res2.order.status).toBe('REJECTED');
       expect(res2.order.errorReason).toBe('INVALID_OR_EXPIRED_LIVE_TOKEN');
     });
+
+    it('sendOrder: makes exactly one request on 5xx (zero retries) and order transitions to UNKNOWN', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({ detail: 'Internal bridge error during execution' }),
+      });
+
+      const client = new BridgeClient({
+        baseUrl: 'http://127.0.0.1:8001',
+        token: TEST_TOKEN,
+        maxRetries: 3, // Default is 3 retries, but sendOrder must override to 0!
+        fetchFn: mockFetch as any,
+      });
+
+      const order = createPendingOrder({
+        idempotencyKey: `idem_500_single_try_${Date.now()}_${Math.random()}`,
+        botId: 'bot_test_retry',
+        magicNumber: Math.floor(10000 + Math.random() * 80000),
+        symbol: 'EURUSD',
+        side: 'BUY',
+        volume: 0.1,
+        intentPrice: 1.085,
+        sl: 1.08,
+      });
+
+      const res = await executeOrderThroughBridge(client, order);
+
+      // Must be exactly 1 attempt — ZERO retries on order sends!
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(res.success).toBe(false);
+      expect(res.order.status).toBe('UNKNOWN');
+
+      const dbOrder = getOrderById(order.id);
+      expect(dbOrder?.status).toBe('UNKNOWN');
+    });
+
+    it('supports getDeals and cancelPending endpoints on BridgeClient', async () => {
+      const mockDeals = [
+        { ticket: 501, order: 201, time: 1700000000, type: 0, entry: 0, magic: 10482, position_id: 201, volume: 0.1, price: 1.085, commission: -1, swap: 0, profit: 0, symbol: 'EURUSD', comment: 'test' },
+      ];
+      const mockFetch = vi.fn().mockImplementation(async (url: string, init: any) => {
+        if (url.includes('/deals')) {
+          return { ok: true, status: 200, json: async () => mockDeals };
+        }
+        if (url.includes('/orders/99101') && init.method === 'DELETE') {
+          return { ok: true, status: 200, json: async () => ({ status: 'SUCCESS', message: 'Cancelled', ticket: 99101 }) };
+        }
+        return { ok: false, status: 404 };
+      });
+
+      const client = new BridgeClient({
+        baseUrl: 'http://127.0.0.1:8001',
+        token: TEST_TOKEN,
+        fetchFn: mockFetch as any,
+      });
+
+      const deals = await client.getDeals(10482);
+      expect(deals).toHaveLength(1);
+      expect(deals[0].ticket).toBe(501);
+
+      const cancelRes = await client.cancelPending(99101);
+      expect(cancelRes.status).toBe('SUCCESS');
+      expect(cancelRes.ticket).toBe(99101);
+    });
   });
 });

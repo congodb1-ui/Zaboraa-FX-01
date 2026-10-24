@@ -1,4 +1,4 @@
-import esbuild from 'esbuild';
+import { transform } from 'sucrase';
 
 export interface TranspileResult {
   success: boolean;
@@ -38,11 +38,10 @@ export function validateStrategyAST(tsCode: string): { isValid: boolean; errors:
     }
   }
 
-  // Syntax check via esbuild dry-run transform
+  // Syntax check via dry-run transform
   try {
-    esbuild.transformSync(tsCode, {
-      loader: 'ts',
-      format: 'cjs',
+    transform(tsCode, {
+      transforms: ['typescript', 'imports'],
     });
   } catch (err: any) {
     errors.push(`Syntax error in strategy code: ${err?.message || err}`);
@@ -68,19 +67,18 @@ export function transpileStrategyCode(tsCode: string): TranspileResult {
   }
 
   try {
-    const result = esbuild.transformSync(tsCode, {
-      loader: 'ts',
-      format: 'cjs',
-      target: 'es2022',
-      sourcemap: true,
-      sourcesContent: true,
-      sourcefile: 'strategy.ts',
+    const result = transform(tsCode, {
+      transforms: ['typescript', 'imports'],
+      sourceMapOptions: {
+        compiledFilename: 'strategy.js',
+      },
+      filePath: 'strategy.ts',
     });
 
     return {
       success: true,
       jsCode: result.code,
-      sourceMap: result.map,
+      sourceMap: result.sourceMap ? JSON.stringify(result.sourceMap) : undefined,
       errors: [],
     };
   } catch (err: any) {

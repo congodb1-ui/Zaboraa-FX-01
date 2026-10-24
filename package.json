@@ -23,6 +23,7 @@
     "quickjs-emscripten": "^0.32.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
+    "sucrase": "^3.35.1",
     "vite": "^8.3.0"
   },
   "devDependencies": {

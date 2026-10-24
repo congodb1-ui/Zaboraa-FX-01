@@ -33,8 +33,8 @@ export class QuickJSStrategySandbox {
 
   constructor(QuickJS: QuickJSWASMModule, options?: QuickJSSandboxOptions) {
     this.QuickJS = QuickJS;
-    const envMemoryMb = process.env.SANDBOX_MEMORY_MB ? parseInt(process.env.SANDBOX_MEMORY_MB, 10) : 32;
-    const envTimeoutMs = process.env.SANDBOX_BAR_TIMEOUT_MS ? parseInt(process.env.SANDBOX_BAR_TIMEOUT_MS, 10) : 50;
+    const envMemoryMb = typeof process !== 'undefined' && process.env?.SANDBOX_MEMORY_MB ? parseInt(process.env.SANDBOX_MEMORY_MB, 10) : 32;
+    const envTimeoutMs = typeof process !== 'undefined' && process.env?.SANDBOX_BAR_TIMEOUT_MS ? parseInt(process.env.SANDBOX_BAR_TIMEOUT_MS, 10) : 50;
     this.memoryLimitBytes = options?.memoryLimitBytes ?? envMemoryMb * 1024 * 1024;
     this.barTimeoutMs = options?.barTimeoutMs ?? envTimeoutMs;
   }

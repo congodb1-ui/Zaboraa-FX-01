@@ -1,4 +1,3 @@
-$jsonContent = @'
 {
   "name": "zaboraa-fx",
   "private": true,
@@ -43,5 +42,3 @@ $jsonContent = @'
     "vitest": "^5.0.5"
   }
 }
-'@
-[System.IO.File]::WriteAllText("$PWD\package.json", $jsonContent, (New-Object System.Text.UTF8Encoding $false))

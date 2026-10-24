@@ -175,10 +175,26 @@ export const BotsView: React.FC<BotsViewProps> = ({
       </div>
 
       {/* Bots Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {bots.map((bot) => {
-          const isRunning = bot.status === 'RUNNING';
-          const isPaused = bot.status === 'PAUSED';
+      {bots.length === 0 ? (
+        <div className="bg-[#0D1322] border border-slate-800 rounded-xl p-12 text-center shadow-sm">
+          <BotIcon className="w-8 h-8 text-slate-600 mx-auto mb-3" />
+          <h3 className="text-sm font-bold text-slate-300">No Automated Trading Bots</h3>
+          <p className="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-4">
+            Zero bots are currently deployed. Bots run with strict risk controls, closed-bar signals, and simulated paper or broker order routing.
+          </p>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-lg inline-flex items-center gap-1.5 transition-all shadow-md shadow-blue-900/30"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Deploy First Bot</span>
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {bots.map((bot) => {
+            const isRunning = bot.status === 'RUNNING';
+            const isPaused = bot.status === 'PAUSED';
 
           return (
             <div
@@ -286,6 +302,7 @@ export const BotsView: React.FC<BotsViewProps> = ({
           );
         })}
       </div>
+      )}
 
       {/* Bot Logs Modal */}
       {selectedBotLogs && (

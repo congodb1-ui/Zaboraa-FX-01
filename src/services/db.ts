@@ -874,6 +874,26 @@ export function insertAuditLog(entry: AuditLogEntry): void {
   }
 }
 
+export function getRecentAuditLogs(limit = 100): AuditLogEntry[] {
+  try {
+    const db = getDb();
+    const rows = db.prepare('SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?').all(limit) as any[];
+    return rows.map((r) => ({
+      id: r.id,
+      timestamp: r.timestamp,
+      actor: r.actor,
+      action: r.action,
+      entity: r.entity,
+      details: r.details,
+      status: r.status,
+    }));
+  } catch (err) {
+    console.error('Failed to query audit_log from SQLite:', err);
+    return [];
+  }
+}
+
+
 export function insertRiskEvent(event: {
   id: string;
   timestamp: string;

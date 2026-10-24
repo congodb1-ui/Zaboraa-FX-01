@@ -37,6 +37,8 @@ import {
   setCachedAi,
   getBotById,
   getRecentRiskEvents,
+  getRecentAuditLogs,
+  getOpenPositionsDb,
 } from './src/services/db';
 import { BridgeClient, executeOrderThroughBridge } from './src/services/bridgeClient';
 import { reconcileWithBroker } from './src/engine/reconciliation';
@@ -1390,6 +1392,29 @@ app.post('/api/watchdog/heartbeat', (req, res) => {
 app.get('/api/risk/events', (req, res) => {
   const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
   res.json(getRecentRiskEvents(limit));
+});
+
+// Audit Log endpoint
+app.get('/api/audit-log', (req, res) => {
+  const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
+  res.json(getRecentAuditLogs(limit));
+});
+
+// Authoritative Positions endpoint (bridge or SQLite database)
+app.get('/api/positions', async (req, res) => {
+  const bridgeUrl = process.env.BRIDGE_URL;
+  if (bridgeUrl) {
+    try {
+      const bridgeClient = new BridgeClient({
+        baseUrl: bridgeUrl,
+        token: process.env.BRIDGE_TOKEN,
+      });
+      const bridgePositions = await bridgeClient.getPositions();
+      return res.json(bridgePositions);
+    } catch (_) {}
+  }
+  const localPositions = getOpenPositionsDb();
+  res.json(localPositions);
 });
 
 app.post('/api/jobs/optimize', async (req, res) => {

@@ -134,35 +134,8 @@ export default function App() {
   // Strategies
   const [strategies, setStrategies] = useState<Strategy[]>(BUILT_IN_STRATEGIES);
 
-  // Automated Bots (loaded from SQLite or clean default with 0 fake trades)
-  const [bots, setBots] = useState<Bot[]>([
-    {
-      id: 'bot_eur_sma',
-      name: 'EURUSD Trend Follower',
-      strategyId: 'strat_sma_cross',
-      strategyName: 'Dual SMA Dynamic Crossover',
-      accountId: 'Not connected',
-      symbol: 'EURUSD',
-      timeframe: 'H1',
-      mode: 'PAPER',
-      status: 'PAUSED',
-      params: { fastPeriod: 20, slowPeriod: 50, stopLossPips: 35, takeProfitPips: 70 },
-      riskLimits: {
-        maxRiskPctPerTrade: 1.5,
-        maxLotSize: 0.5,
-        maxOpenPositions: 2,
-        maxDailyLossUSD: 200,
-        stopLossPips: 35,
-        takeProfitPips: 70,
-        maxSpreadPips: 2.0,
-      },
-      todayPnl: 0,
-      totalPnl: 0,
-      tradesCount: 0,
-      lastHeartbeat: new Date().toISOString(),
-      logs: [],
-    },
-  ]);
+  // Automated Bots (loaded from SQLite database, zero hardcoded records)
+  const [bots, setBots] = useState<Bot[]>([]);
 
   // Risk Firewall Settings
   const [riskSettings, setRiskSettings] = useState<RiskSettings>({
@@ -179,25 +152,11 @@ export default function App() {
     killSwitchAction: 'CLOSE_ALL_AND_HALT',
   });
 
-  // Security Audit Log
-  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([
-    { id: 'aud_1', timestamp: new Date(Date.now() - 3600000).toISOString(), actor: 'Bot Engine', action: 'ORDER_OPEN', entity: 'EURUSD #10482', details: 'BUY 0.2 lots at 1.08340. Risk check passed.', status: 'SUCCESS' },
-    { id: 'aud_2', timestamp: new Date(Date.now() - 7200000).toISOString(), actor: 'Trader', action: 'LOGIN_EXNESS', entity: 'Exness-MT5Trial9', details: 'Authorized session for MT5 demo account 50192834.', status: 'SUCCESS' },
-  ]);
+  // Security Audit Log (loaded from SQLite database, zero hardcoded records)
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
 
-  // Journal Entries
-  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([
-    {
-      id: 'j_1',
-      tradeTicket: 10482,
-      symbol: 'EURUSD',
-      pnl: 22.40,
-      tags: ['Trend Following', 'London Session', 'Disciplined'],
-      notes: 'Entry conformed to dual SMA crossover. Respected 1.5% max risk limit and set trailing stop.',
-      rating: 5,
-      createdAt: '2026-10-23T14:15:00.000Z',
-    },
-  ]);
+  // Journal Entries (stored in user records, zero hardcoded records)
+  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
 
   // Probe Bridge function
   const handleTestBridge = async (url: string, token: string): Promise<boolean> => {
@@ -303,8 +262,26 @@ export default function App() {
     fetch('/api/bots')
       .then((res) => res.json())
       .then((savedBots) => {
-        if (Array.isArray(savedBots) && savedBots.length > 0) {
+        if (Array.isArray(savedBots)) {
           setBots(savedBots);
+        }
+      })
+      .catch(() => {});
+
+    fetch('/api/positions')
+      .then((res) => res.json())
+      .then((savedPositions) => {
+        if (Array.isArray(savedPositions)) {
+          setPositions(savedPositions);
+        }
+      })
+      .catch(() => {});
+
+    fetch('/api/audit-log')
+      .then((res) => res.json())
+      .then((savedLogs) => {
+        if (Array.isArray(savedLogs)) {
+          setAuditLogs(savedLogs);
         }
       })
       .catch(() => {});

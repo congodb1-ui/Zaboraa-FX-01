@@ -9,3 +9,5 @@ coverage/
 data/
 .aistudio/
 *.sqlite*
+__pycache__/
+*.pyc

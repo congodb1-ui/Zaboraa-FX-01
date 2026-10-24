@@ -75,6 +75,7 @@ Items in this table have automated unit/integration tests running in the test su
 | **Risk Manager Firewall Rules** | Kill switch, SL, max lot, spread, trading hours, max positions, max risk, daily loss, drawdown, news blackout | `src/engine/__tests__/runnerAndRisk.test.ts` | Pass | All 11 rules evaluated and logged to `risk_events` |
 | **Heartbeat Watchdog Auto-Pause** | Auto-pauses bots on bridge timeout (>15s), preserves broker SL/TP | `src/engine/__tests__/runnerAndRisk.test.ts` | Pass | Transitions running bots to PAUSED, logs CRITICAL risk event |
 | **Confirmed Manual Resume** | Manual resume blocked until bridge heartbeat restored | `src/engine/__tests__/runnerAndRisk.test.ts` | Pass | Requires healthy bridge before resuming paused bots |
+| **Fake Data Removal & DB State** | Authoritative SQLite/Bridge query for positions, bots, audit logs | `src/engine/__tests__/stage4FakeDataRemoval.test.ts` | Pass | Hardcoded fake records removed; empty states & SIMULATION banners enforced |
 
 ---
 
@@ -86,7 +87,6 @@ Items in this table exist in the codebase but have not yet been verified against
 | :--- | :--- | :--- | :--- |
 | **Live MT5 Windows IPC** | Exness MetaTrader 5 live terminal | Requires running Windows terminal; simulated in Linux container | Manual verification checklist on Windows |
 | **Partitioned Candle Storage** | Year-partitioned JSON/SQLite storage | Storage functions implemented in `candleStorage.ts` | Stage 3 (dataset manager live import) |
-| **Browser UI Views** | Dashboard, Markets, Positions, Bots | Uses simulated demo account when bridge offline | Stage 4 (remove fake data & enforce badges) |
 
 ---
 
@@ -96,8 +96,8 @@ Features defined in the master specification scheduled for upcoming stages.
 
 | Stage | Feature Area | Description |
 | :--- | :--- | :--- |
-| **Stage 4** | **Remove Fake Data** | Purge hardcoded mock positions and random price simulator; require explicit "SIMULATION: no broker connected" banner across UI. |
 | **Stage 5** | **Fundamental Data Module** | SQLite `macro_series`, `calendar_events`, `cot_reports`; FRED API fetcher; Forex Factory calendar feed; CFTC COT reports; news blackout rule; currency bias score. |
 | **Stage 6** | **Market Structure & Positioning**| Swing detection, BOS, CHoCH, Fair Value Gaps, Order Blocks, Liquidity Sweeps; currency strength meter; positioning analysis; signal study tool. |
+| **Stage 7** | **Portfolio Flow View** | Read-only Sankey allocation & risk diagram (Equity -> Asset Class -> Instrument -> Ticker cards); pure functions in `src/engine/portfolioFlow/`. |
 
 

@@ -1,8 +1,12 @@
 import { Candle, OptimizationConfig, OptimizationReport, OptimizationTrial } from '../types/forex';
 import { runBacktest } from './backtester';
-import { BUILT_IN_STRATEGIES } from '../services/builtInStrategies';
+import { getStrategyExecutor } from '../services/builtInStrategies';
 import { calculateHeuristicOverfittingScore } from './overfittingHeuristic';
 import { createMulberry32 } from './monteCarlo';
+
+export interface OptimizationOptions {
+  isCancelled?: () => boolean;
+}
 
 /**
  * Executes a parameter optimization sweep (Grid or seeded Random)
@@ -11,7 +15,8 @@ import { createMulberry32 } from './monteCarlo';
 export async function runOptimizationSweep(
   candles: Candle[],
   config: OptimizationConfig,
-  onProgress?: (progressPct: number, currentTrial: number, totalTrials: number) => void
+  onProgress?: (progressPct: number, currentTrial: number, totalTrials: number) => void,
+  options?: OptimizationOptions
 ): Promise<OptimizationReport> {
   const seed = config.seed ?? 987654321;
   const rng = createMulberry32(seed);
@@ -55,13 +60,18 @@ export async function runOptimizationSweep(
     }
   }
 
-  // Find strategy logic
-  const strat = BUILT_IN_STRATEGIES.find(s => s.id === config.strategyId) || BUILT_IN_STRATEGIES[0];
+  // Obtain strategy executor (throws UNKNOWN_STRATEGY if invalid/unknown)
+  const executor = getStrategyExecutor(config.strategyId);
 
   const trials: OptimizationTrial[] = [];
   const totalTrials = paramCombinations.length;
 
   for (let idx = 0; idx < totalTrials; idx++) {
+    // Check cancellation
+    if (options?.isCancelled && options.isCancelled()) {
+      throw new Error('OPTIMIZATION_CANCELLED');
+    }
+
     const params = paramCombinations[idx];
 
     // 1. Run In-Sample
@@ -88,28 +98,7 @@ export async function runOptimizationSweep(
           isResearchEligible: true,
         },
       },
-      (ctx, p) => {
-        // Simple mock handler or built-in dispatch
-        const fast = p.fastPeriod || 20;
-        const slow = p.slowPeriod || 50;
-        if (ctx.data.length < slow) return;
-
-        let sumFast = 0;
-        let sumSlow = 0;
-        for (let j = 0; j < slow; j++) {
-          const c = ctx.data[ctx.data.length - 1 - j].close;
-          sumSlow += c;
-          if (j < fast) sumFast += c;
-        }
-        const smaFast = sumFast / fast;
-        const smaSlow = sumSlow / slow;
-
-        if (smaFast > smaSlow && ctx.openPositions.length === 0) {
-          ctx.buy(0.1, ctx.currentBar.close - 0.0035, ctx.currentBar.close + 0.0070);
-        } else if (smaFast < smaSlow && ctx.openPositions.length === 0) {
-          ctx.sell(0.1, ctx.currentBar.close + 0.0035, ctx.currentBar.close - 0.0070);
-        }
-      }
+      executor
     );
 
     // 2. Run Out-of-Sample
@@ -136,27 +125,7 @@ export async function runOptimizationSweep(
           isResearchEligible: true,
         },
       },
-      (ctx, p) => {
-        const fast = p.fastPeriod || 20;
-        const slow = p.slowPeriod || 50;
-        if (ctx.data.length < slow) return;
-
-        let sumFast = 0;
-        let sumSlow = 0;
-        for (let j = 0; j < slow; j++) {
-          const c = ctx.data[ctx.data.length - 1 - j].close;
-          sumSlow += c;
-          if (j < fast) sumFast += c;
-        }
-        const smaFast = sumFast / fast;
-        const smaSlow = sumSlow / slow;
-
-        if (smaFast > smaSlow && ctx.openPositions.length === 0) {
-          ctx.buy(0.1, ctx.currentBar.close - 0.0035, ctx.currentBar.close + 0.0070);
-        } else if (smaFast < smaSlow && ctx.openPositions.length === 0) {
-          ctx.sell(0.1, ctx.currentBar.close + 0.0035, ctx.currentBar.close - 0.0070);
-        }
-      }
+      executor
     );
 
     // 3. Overfitting heuristic evaluation

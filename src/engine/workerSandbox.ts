@@ -25,7 +25,6 @@ export function validateStrategyCode(code: string): ValidationResult {
   const errors: string[] = [];
 
   for (const token of FORBIDDEN_TOKENS) {
-    // Check for word boundary
     const regex = new RegExp(`\\b${token}\\b`, 'g');
     if (regex.test(code)) {
       errors.push(`Forbidden identifier detected: '${token}'. Sandbox prevents DOM, storage, and network access.`);
@@ -43,138 +42,72 @@ export function validateStrategyCode(code: string): ValidationResult {
   };
 }
 
-export interface WorkerExecutionResult {
+export interface SmokeTestExecutionResult {
   success: boolean;
   decisionsCount: number;
+  executedBars?: number;
   error?: string;
   durationMs: number;
 }
 
-export function runStrategyInWorker(
+/**
+ * Executes a fast smoke test of strategy code inside the server-side QuickJS WASM sandbox.
+ * Replaces the unsafe client-side `new Function` worker evaluation.
+ */
+export async function runStrategySmokeTest(
   strategyCode: string,
   sampleCandles: Candle[],
-  timeoutMs = 3000
-): Promise<WorkerExecutionResult> {
-  return new Promise((resolve) => {
-    const validation = validateStrategyCode(strategyCode);
-    if (!validation.isValid) {
-      return resolve({
-        success: false,
-        decisionsCount: 0,
-        error: validation.errors.join(' | '),
-        durationMs: 0,
-      });
-    }
+  params: Record<string, any> = {}
+): Promise<SmokeTestExecutionResult> {
+  const validation = validateStrategyCode(strategyCode);
+  if (!validation.isValid) {
+    return {
+      success: false,
+      decisionsCount: 0,
+      error: validation.errors.join(' | '),
+      durationMs: 0,
+    };
+  }
 
-    const startTime = performance.now();
-
-    // Prepare worker script
-    const workerScript = `
-self.onmessage = function(e) {
-  const { code, candles, params } = e.data;
-  let decisions = 0;
+  const startTime = performance.now();
 
   try {
-    // Encapsulate strategy definition
-    const factory = new Function('ctx', 'bar', code + '; if (typeof onBar === "function") { onBar(ctx, bar); }');
-    
-    // Simulate loop
-    for (let i = 20; i < Math.min(candles.length, 60); i++) {
-      const currentBar = candles[i];
-      const slice = candles.slice(0, i + 1);
-      const mockCtx = {
-        data: slice,
-        currentBar: currentBar,
-        barIndex: i,
-        params: params || {},
-        buy: function() { decisions++; },
-        sell: function() { decisions++; },
-        close: function() { decisions++; },
-        modify: function() { decisions++; }
-      };
-
-      factory(mockCtx, currentBar);
-    }
-
-    self.postMessage({ success: true, decisionsCount: decisions });
-  } catch (err) {
-    self.postMessage({ success: false, error: err ? err.message : 'Unknown execution error' });
-  }
-};
-`;
-
-    const blob = new Blob([workerScript], { type: 'application/javascript' });
-    const workerUrl = URL.createObjectURL(blob);
-    let worker: Worker | null = null;
-    let timer: any = null;
-
-    try {
-      worker = new Worker(workerUrl);
-
-      timer = setTimeout(() => {
-        if (worker) {
-          worker.terminate();
-          URL.revokeObjectURL(workerUrl);
-          resolve({
-            success: false,
-            decisionsCount: 0,
-            error: `Strategy timed out after ${timeoutMs}ms (infinite loop protection).`,
-            durationMs: Math.round(performance.now() - startTime),
-          });
-        }
-      }, timeoutMs);
-
-      worker.onmessage = (event) => {
-        clearTimeout(timer);
-        if (worker) {
-          worker.terminate();
-        }
-        URL.revokeObjectURL(workerUrl);
-        const durationMs = Math.round(performance.now() - startTime);
-
-        if (event.data.success) {
-          resolve({
-            success: true,
-            decisionsCount: event.data.decisionsCount || 0,
-            durationMs,
-          });
-        } else {
-          resolve({
-            success: false,
-            decisionsCount: 0,
-            error: event.data.error,
-            durationMs,
-          });
-        }
-      };
-
-      worker.onerror = (err) => {
-        clearTimeout(timer);
-        if (worker) worker.terminate();
-        URL.revokeObjectURL(workerUrl);
-        resolve({
-          success: false,
-          decisionsCount: 0,
-          error: err.message || 'Worker syntax error',
-          durationMs: Math.round(performance.now() - startTime),
-        });
-      };
-
-      worker.postMessage({
+    const response = await fetch('/api/strategies/smoke-test', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
         code: strategyCode,
         candles: sampleCandles,
-        params: {},
-      });
-    } catch (err: any) {
-      if (timer) clearTimeout(timer);
-      if (worker) worker.terminate();
-      URL.revokeObjectURL(workerUrl);
-      resolve({
+        params,
+      }),
+    });
+
+    const data = await response.json();
+    const durationMs = Math.round(performance.now() - startTime);
+
+    if (response.ok && data.success) {
+      return {
+        success: true,
+        decisionsCount: data.totalSignals || 0,
+        executedBars: data.executedBars || 0,
+        durationMs: data.durationMs || durationMs,
+      };
+    } else {
+      return {
         success: false,
         decisionsCount: 0,
-        error: err.message,
-        durationMs: Math.round(performance.now() - startTime),
-      });
+        error: data.error || 'Smoke test execution failed',
+        durationMs,
+      };
     }
-  });
+  } catch (err: any) {
+    return {
+      success: false,
+      decisionsCount: 0,
+      error: err.message || 'Network error reaching QuickJS sandbox server endpoint',
+      durationMs: Math.round(performance.now() - startTime),
+    };
+  }
 }

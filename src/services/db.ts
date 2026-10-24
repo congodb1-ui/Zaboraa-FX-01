@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import {
   Strategy,
   Bot,
@@ -82,6 +83,18 @@ function initSchema(db: DatabaseSync) {
       error_message TEXT,
       created_at TEXT NOT NULL,
       completed_at TEXT
+    );
+  `);
+
+  // AI Prompt & Response Cache
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_cache (
+      cache_key TEXT PRIMARY KEY,
+      prompt_type TEXT NOT NULL,
+      model_name TEXT NOT NULL,
+      prompt_version TEXT NOT NULL,
+      response_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
     );
   `);
 
@@ -578,5 +591,186 @@ export function insertRiskEvent(event: {
     );
   } catch (err) {
     console.error('Failed to write risk event to SQLite:', err);
+  }
+}
+
+export function stopAllBots(): number {
+  try {
+    const db = getDb();
+    const res = db.prepare("UPDATE bots SET status = 'STOPPED' WHERE status != 'STOPPED'").run();
+    return Number(res.changes);
+  } catch (err) {
+    console.error('Failed to stop all bots in SQLite:', err);
+    return 0;
+  }
+}
+
+export function cancelAllPendingOrders(): number {
+  try {
+    const db = getDb();
+    const res = db.prepare(`
+      UPDATE orders
+      SET status = 'CANCELLED', error_reason = 'Cancelled by emergency kill switch'
+      WHERE status IN ('PENDING_BROKER', 'SENT')
+    `).run();
+    return Number(res.changes);
+  } catch (err) {
+    console.error('Failed to cancel pending orders in SQLite:', err);
+    return 0;
+  }
+}
+
+export function getOrSetPerInstallSalt(): string {
+  try {
+    const db = getDb();
+    const row = db.prepare("SELECT value FROM system_state WHERE key = 'encryption_salt'").get() as any;
+    if (row && row.value) {
+      return row.value;
+    }
+    // Generate fresh 16-byte random salt for this installation
+    const newSalt = crypto.randomBytes(16).toString('hex');
+    db.prepare(`
+      INSERT INTO system_state (key, value, updated_at)
+      VALUES ('encryption_salt', ?, ?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(newSalt, new Date().toISOString());
+    return newSalt;
+  } catch (err) {
+    console.error('Failed to read or persist per-install salt, falling back to local fallback:', err);
+    return 'zaboraa-fallback-salt-2026';
+  }
+}
+
+// ==========================================
+// BACKGROUND JOBS (PERSISTENT IN SQLITE)
+// ==========================================
+
+export interface PersistentJob {
+  id: string;
+  type: string;
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+  progress: number;
+  params: any;
+  result?: any;
+  errorMessage?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export function createJobDb(id: string, type: string, params: any): void {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO jobs (id, type, status, progress, params_json, created_at)
+    VALUES (?, ?, 'RUNNING', 0, ?, ?)
+  `).run(id, type, JSON.stringify(params || {}), new Date().toISOString());
+}
+
+export function getJobDb(id: string): PersistentJob | null {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as any;
+  if (!row) return null;
+  return {
+    id: row.id,
+    type: row.type,
+    status: row.status,
+    progress: row.progress,
+    params: row.params_json ? JSON.parse(row.params_json) : {},
+    result: row.result_json ? JSON.parse(row.result_json) : undefined,
+    errorMessage: row.error_message || undefined,
+    createdAt: row.created_at,
+    completedAt: row.completed_at || undefined,
+  };
+}
+
+export function updateJobProgressDb(id: string, progress: number): void {
+  const db = getDb();
+  db.prepare(`
+    UPDATE jobs
+    SET progress = ?
+    WHERE id = ? AND status != 'CANCELLED'
+  `).run(progress, id);
+}
+
+/**
+ * Updates job to COMPLETED. CRITICAL: A cancelled job must never be overwritten with COMPLETED.
+ */
+export function updateJobCompletedDb(id: string, result: any): boolean {
+  const db = getDb();
+  const res = db.prepare(`
+    UPDATE jobs
+    SET status = 'COMPLETED', progress = 100, result_json = ?, completed_at = ?
+    WHERE id = ? AND status != 'CANCELLED'
+  `).run(JSON.stringify(result || {}), new Date().toISOString(), id);
+  return Number(res.changes) > 0;
+}
+
+export function updateJobFailedDb(id: string, errorMessage: string): void {
+  const db = getDb();
+  db.prepare(`
+    UPDATE jobs
+    SET status = 'FAILED', error_message = ?, completed_at = ?
+    WHERE id = ? AND status != 'CANCELLED'
+  `).run(errorMessage, new Date().toISOString(), id);
+}
+
+export function cancelJobDb(id: string): boolean {
+  const db = getDb();
+  const res = db.prepare(`
+    UPDATE jobs
+    SET status = 'CANCELLED', completed_at = ?
+    WHERE id = ? AND status NOT IN ('COMPLETED', 'FAILED')
+  `).run(new Date().toISOString(), id);
+  return Number(res.changes) > 0;
+}
+
+export function isJobCancelledDb(id: string): boolean {
+  const db = getDb();
+  const row = db.prepare('SELECT status FROM jobs WHERE id = ?').get(id) as any;
+  return row?.status === 'CANCELLED';
+}
+
+// ==========================================
+// AI CACHE (PERSISTENT IN SQLITE)
+// ==========================================
+
+export function getCachedAi(cacheKey: string): any | null {
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT response_json FROM ai_cache WHERE cache_key = ?').get(cacheKey) as any;
+    if (row && row.response_json) {
+      return JSON.parse(row.response_json);
+    }
+    return null;
+  } catch (err) {
+    console.error('Failed to read from ai_cache in SQLite:', err);
+    return null;
+  }
+}
+
+export function setCachedAi(
+  cacheKey: string,
+  promptType: string,
+  modelName: string,
+  promptVersion: string,
+  responseData: any
+): void {
+  try {
+    const db = getDb();
+    db.prepare(`
+      INSERT INTO ai_cache (cache_key, prompt_type, model_name, prompt_version, response_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(cache_key) DO UPDATE SET
+        response_json = excluded.response_json,
+        created_at = excluded.created_at
+    `).run(
+      cacheKey,
+      promptType,
+      modelName,
+      promptVersion,
+      JSON.stringify(responseData),
+      new Date().toISOString()
+    );
+  } catch (err) {
+    console.error('Failed to persist to ai_cache in SQLite:', err);
   }
 }

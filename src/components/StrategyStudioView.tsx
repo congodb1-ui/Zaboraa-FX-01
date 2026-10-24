@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Strategy, StrategyParamSchema } from '../types/forex';
-import { runStrategyInWorker, validateStrategyCode } from '../engine/workerSandbox';
+import { runStrategySmokeTest, validateStrategyCode } from '../engine/workerSandbox';
 import {
   Code2,
   Play,
@@ -88,16 +88,16 @@ export const StrategyStudioView: React.FC<StrategyStudioViewProps> = ({
       spread: 1.0,
     }));
 
-    const res = await runStrategyInWorker(codeContent, sampleCandles, 2500);
+    const res = await runStrategySmokeTest(codeContent, sampleCandles, activeParams);
     if (res.success) {
       setWorkerTestResult({
         passed: true,
-        message: `Web Worker sandbox test PASSED in ${res.durationMs}ms (${res.decisionsCount} decisions). No leaks.`,
+        message: `QuickJS WASM sandbox test PASSED in ${res.durationMs}ms (${res.decisionsCount} decisions). Zero lookahead.`,
       });
     } else {
       setWorkerTestResult({
         passed: false,
-        message: `Worker execution halted: ${res.error}`,
+        message: `QuickJS sandbox halted: ${res.error}`,
       });
     }
   };

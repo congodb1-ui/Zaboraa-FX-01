@@ -1,6 +1,0 @@
-{
-  "summary":  "Revised implementation plan incorporating all 7 user amendments for Priority 1: Vitest known-answer tests with expected vs actual telemetry, robust no-lookahead bar mutation proof, Web Worker client-side sandboxing, secure read-only MT5 bridge with dynamic UTC offset detection, 3-tier honest data provenance, demo placeholder credentials, and localhost bridge troubleshooting guides.",
-  "updatedAt":  "2026-10-23T17:58:47.142085674Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

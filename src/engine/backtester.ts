@@ -13,6 +13,7 @@ interface PositionState {
   ticket: number;
   entryTime: number;
   direction: 'BUY' | 'SELL';
+  side: 'BUY' | 'SELL';
   size: number;
   entryPrice: number;
   sl?: number;
@@ -29,18 +30,7 @@ export function runBacktest(
   candles: Candle[],
   config: BacktestConfig,
   strategyLogic: (
-    ctx: {
-      data: Candle[];
-      currentBar: Candle;
-      barIndex: number;
-      buy: (size?: number, sl?: number, tp?: number, comment?: string) => void;
-      sell: (size?: number, sl?: number, tp?: number, comment?: string) => void;
-      closePosition: (ticket?: number) => void;
-      modifyPosition: (ticket: number, sl?: number, tp?: number) => void;
-      openPositions: PositionState[];
-      accountBalance: number;
-      accountEquity: number;
-    },
+    ctx: any,
     params: Record<string, any>
   ) => void
 ): BacktestResult {
@@ -66,18 +56,14 @@ export function runBacktest(
   let totalSwap = 0;
   let totalSlippageCost = 0;
 
-  // Pip value helper
+  // Single authoritative pip value from SymbolSpec
   const calculatePipValue = (symbol: SymbolName, currentPrice: number) => {
-    if (symbol === 'EURUSD' || symbol === 'GBPUSD') {
-      return 10.0; // $10 per pip for 1.0 standard lot
-    }
+    const s = SYMBOL_SPECS[symbol];
+    if (!s) return 10.0;
     if (symbol === 'USDJPY') {
-      return (1000 / currentPrice); // e.g. 1000 / 152 ≈ $6.57
+      return (s.contractSize * s.point) / currentPrice;
     }
-    if (symbol === 'XAUUSD') {
-      return 100.0; // $1 move on 100oz = $100 per lot
-    }
-    return 10.0;
+    return s.pipValuePerLotUSD;
   };
 
   const pipSize = spec.point * (spec.digits === 3 || spec.digits === 5 ? 10 : 1);
@@ -103,14 +89,18 @@ export function runBacktest(
     const prevBar = candles[i - 1];
     const pipVal = calculatePipValue(config.symbol, currentBar.close);
 
-    // 1. Process overnight swap (if bar passes midnight UTC)
+    // 1. Process overnight swap (if bar passes midnight UTC) with configurable triple-swap weekday
     if (config.costModel.includeSwap) {
       const prevDate = new Date(prevBar.time * 1000).getUTCDate();
       const currDate = new Date(currentBar.time * 1000).getUTCDate();
       if (prevDate !== currDate) {
+        const currentDayOfWeek = new Date(currentBar.time * 1000).getUTCDay();
+        const tripleDay = spec.tripleSwapDay ?? 3;
+        const swapMultiplier = currentDayOfWeek === tripleDay ? 3.0 : 1.0;
+
         for (const pos of openPositions) {
           const swapRate = pos.direction === 'BUY' ? spec.swapLong : spec.swapShort;
-          const swapUSD = swapRate * pos.size * (spec.point / pipSize) * 1.5;
+          const swapUSD = swapRate * pos.size * swapMultiplier;
           pos.swap += swapUSD;
           totalSwap += swapUSD;
         }
@@ -273,6 +263,7 @@ export function runBacktest(
           ticket: ticketCounter++,
           entryTime: currentBar.time,
           direction: 'BUY',
+          side: 'BUY',
           size: effectiveSize,
           entryPrice: currentBar.close + (spreadPips * pipSize) / 2, // enter at Ask
           sl,
@@ -306,6 +297,7 @@ export function runBacktest(
           ticket: ticketCounter++,
           entryTime: currentBar.time,
           direction: 'SELL',
+          side: 'SELL',
           size: effectiveSize,
           entryPrice: currentBar.close - (spreadPips * pipSize) / 2, // enter at Bid
           sl,
@@ -364,6 +356,88 @@ export function runBacktest(
           if (sl !== undefined) pos.sl = sl;
           if (tp !== undefined) pos.tp = tp;
         }
+      },
+      // Aliases
+      close: (ticket?: number) => {
+        ctx.closePosition(ticket);
+      },
+      modify: (ticket: number, sl?: number, tp?: number) => {
+        ctx.modifyPosition(ticket, sl, tp);
+      },
+      // Indicator helpers
+      sma: (period: number, offset = 0) => {
+        const targetIdx = i - offset;
+        if (targetIdx < period - 1 || targetIdx < 0) return null;
+        let sum = 0;
+        for (let j = targetIdx - period + 1; j <= targetIdx; j++) {
+          sum += candles[j].close;
+        }
+        return sum / period;
+      },
+      ema: (period: number, offset = 0) => {
+        const targetIdx = i - offset;
+        if (targetIdx < period - 1 || targetIdx < 0) return null;
+        const k = 2 / (period + 1);
+        let ema = candles[0].close;
+        for (let j = 1; j <= targetIdx; j++) {
+          ema = candles[j].close * k + ema * (1 - k);
+        }
+        return ema;
+      },
+      rsi: (period = 14, offset = 0) => {
+        const targetIdx = i - offset;
+        if (targetIdx < period || targetIdx < 0) return null;
+        let gains = 0;
+        let losses = 0;
+        for (let j = targetIdx - period + 1; j <= targetIdx; j++) {
+          const diff = candles[j].close - candles[j - 1].close;
+          if (diff >= 0) gains += diff;
+          else losses += Math.abs(diff);
+        }
+        if (losses === 0) return 100;
+        const rs = gains / losses;
+        return 100 - 100 / (1 + rs);
+      },
+      atr: (period = 14, offset = 0) => {
+        const targetIdx = i - offset;
+        if (targetIdx < period || targetIdx <= 0) return null;
+        let sumTr = 0;
+        for (let j = targetIdx - period + 1; j <= targetIdx; j++) {
+          const c = candles[j];
+          const prev = candles[j - 1];
+          const tr = Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close));
+          sumTr += tr;
+        }
+        return sumTr / period;
+      },
+      donchian: (period = 20, offset = 0) => {
+        const targetIdx = i - offset;
+        if (targetIdx < period || targetIdx <= 0) return null;
+        let maxH = -Infinity;
+        let minL = Infinity;
+        for (let j = targetIdx - period; j < targetIdx; j++) {
+          if (candles[j].high > maxH) maxH = candles[j].high;
+          if (candles[j].low < minL) minL = candles[j].low;
+        }
+        return { high: maxH, low: minL, middle: (maxH + minL) / 2 };
+      },
+      bollinger: (period = 20, stdDevMult = 2.0, offset = 0) => {
+        const targetIdx = i - offset;
+        if (targetIdx < period - 1 || targetIdx < 0) return null;
+        let sum = 0;
+        for (let j = targetIdx - period + 1; j <= targetIdx; j++) {
+          sum += candles[j].close;
+        }
+        const mean = sum / period;
+        let varSum = 0;
+        for (let j = targetIdx - period + 1; j <= targetIdx; j++) {
+          varSum += Math.pow(candles[j].close - mean, 2);
+        }
+        const sd = Math.sqrt(varSum / period);
+        return { middle: mean, upper: mean + stdDevMult * sd, lower: mean - stdDevMult * sd };
+      },
+      crossover: (c1: number, c2: number, p1: number, p2: number) => {
+        return p1 <= p2 && c1 > c2;
       },
     };
 

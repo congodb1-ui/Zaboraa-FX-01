@@ -7,20 +7,30 @@ Bound strictly to 127.0.0.1 with mandatory Bearer Token authentication.
 import os
 import sys
 import time
+import json
+import hmac
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
-from fastapi import FastAPI, Depends, HTTPException, Header, status, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configuration from Environment
-BRIDGE_TOKEN = os.getenv("BRIDGE_TOKEN", "zaboraa_local_bridge_token_9872")
+# Mandatory Bridge Token: Must be at least 24 characters with no default fallback
+BRIDGE_TOKEN = os.getenv("BRIDGE_TOKEN")
+if not BRIDGE_TOKEN or len(BRIDGE_TOKEN.strip()) < 24:
+    # Fail fast and loud at startup
+    raise RuntimeError(
+        "CRITICAL_SECURITY_HALT: BRIDGE_TOKEN is not set or shorter than 24 characters in environment. "
+        "The bridge refuses to start with default or weak tokens. Set BRIDGE_TOKEN in mt5-bridge/.env."
+    )
+BRIDGE_TOKEN = BRIDGE_TOKEN.strip()
+
 ALLOW_TRADING = os.getenv("ALLOW_TRADING", "false").lower() in ("true", "1", "yes")
-MT5_LOGIN = int(os.getenv("MT5_LOGIN", "50192834"))
-MT5_PASSWORD = os.getenv("MT5_PASSWORD", "demo_password")
+MT5_LOGIN = int(os.getenv("MT5_LOGIN", "0")) if os.getenv("MT5_LOGIN") else None
+MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER = os.getenv("MT5_SERVER", "Exness-MT5Trial9")
 MT5_PATH = os.getenv("MT5_PATH", None)
 
@@ -30,19 +40,16 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS restricted to localhost web portal origins
+# Restricted CORS: No wildcard '*', credentials disabled, read from env
+allowed_origins_raw = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+ALLOWED_ORIGINS = [o.strip() for o in allowed_origins_raw.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "*"  # Allows web browser to connect from local development
-    ],
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # Optional import of MetaTrader5 (available on Windows with MT5 installed)
@@ -57,7 +64,7 @@ except ImportError:
     print("[WARN] MetaTrader5 package is not available on this platform (Windows required). Running in diagnostic stub mode.")
 
 
-# Bearer Token Security Dependency
+# Bearer Token Security Dependency with constant-time comparison
 async def verify_bearer_token(authorization: Optional[str] = Header(None)):
     if not authorization:
         raise HTTPException(
@@ -66,10 +73,18 @@ async def verify_bearer_token(authorization: Optional[str] = Header(None)):
             headers={"WWW-Authenticate": "Bearer"},
         )
     parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer" or parts[1] != BRIDGE_TOKEN:
+    if len(parts) != 2 or parts[0].lower() != "bearer":
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid bridge token. Please verify BRIDGE_TOKEN in Settings.",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Authorization header format. Expected: Bearer <TOKEN>",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # Constant-time comparison to prevent timing attacks
+    if not hmac.compare_digest(parts[1], BRIDGE_TOKEN):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid bridge token. Token mismatch.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
     return parts[1]
 
@@ -77,14 +92,53 @@ async def verify_bearer_token(authorization: Optional[str] = Header(None)):
 def get_broker_utc_offset_hours() -> int:
     """Calculates server time offset from UTC dynamically."""
     if MT5_AVAILABLE and mt5:
-        term_time = mt5.symbol_info_tick("EURUSD") or mt5.symbol_info_tick("EURUSDm")
-        if term_time:
-            server_epoch = term_time.time
-            utc_epoch = int(datetime.now(timezone.utc).timestamp())
-            diff_hours = round((server_epoch - utc_epoch) / 3600)
-            return diff_hours
+        try:
+            term_time = mt5.symbol_info_tick("EURUSD") or mt5.symbol_info_tick("EURUSDm")
+            if term_time:
+                server_epoch = term_time.time
+                utc_epoch = int(datetime.now(timezone.utc).timestamp())
+                return round((server_epoch - utc_epoch) / 3600)
+        except Exception:
+            pass
     # Default Exness server offset is UTC+2 (Winter) or UTC+3 (Summer)
     return 2
+
+
+def is_demo_account(trade_mode: Optional[int]) -> bool:
+    """
+    Evaluates account trade mode against named MT5 constants.
+    Fail-safe: Anything that is not explicitly ACCOUNT_TRADE_MODE_DEMO
+    is treated as non-demo (REAL or CONTEST).
+    """
+    if trade_mode is None:
+        return False
+    if MT5_AVAILABLE and mt5 and hasattr(mt5, "ACCOUNT_TRADE_MODE_DEMO"):
+        return trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO
+    # Fallback if mt5 module mock does not set ACCOUNT_TRADE_MODE_DEMO
+    return False
+
+
+KILL_STATE_FILE = os.path.join(os.path.dirname(__file__), "kill_state.json")
+
+def is_kill_state_active() -> bool:
+    if os.path.exists(KILL_STATE_FILE):
+        try:
+            with open(KILL_STATE_FILE, "r") as f:
+                data = json.load(f)
+                return bool(data.get("kill_engaged", False))
+        except Exception:
+            return False
+    return False
+
+def set_kill_state(engaged: bool):
+    try:
+        with open(KILL_STATE_FILE, "w") as f:
+            json.dump({
+                "kill_engaged": engaged,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }, f)
+    except Exception as e:
+        print(f"[WARN] Failed to persist kill state: {e}")
 
 
 # 1. Health & Terminal State
@@ -98,21 +152,26 @@ async def health(token: str = Depends(verify_bearer_token)):
     terminal_running = False
 
     if MT5_AVAILABLE and mt5:
-        if mt5.initialize(path=MT5_PATH) if MT5_PATH else mt5.initialize():
-            initialized = True
-            terminal_running = True
-            term = mt5.terminal_info()
-            if term:
-                terminal_info = term._asdict()
-                algo_trading = terminal_info.get("trade_allowed", False)
-                connected = terminal_info.get("connected", False)
+        try:
+            if mt5.initialize(path=MT5_PATH) if MT5_PATH else mt5.initialize():
+                initialized = True
+                terminal_running = True
+                term = mt5.terminal_info()
+                if term:
+                    terminal_info = term._asdict()
+                    algo_trading = terminal_info.get("trade_allowed", False)
+                    connected = terminal_info.get("connected", False)
 
-            acc = mt5.account_info()
-            if acc:
-                account_info = acc._asdict()
+                acc = mt5.account_info()
+                if acc:
+                    account_info = acc._asdict()
+        except Exception as e:
+            print(f"[WARN] Error during MT5 health check: {e}")
 
     utc_offset = get_broker_utc_offset_hours()
-    account_type = "REAL" if (account_info and account_info.get("trade_mode") == 0) else "DEMO"
+    trade_mode = account_info.get("trade_mode") if account_info else None
+    is_demo = is_demo_account(trade_mode)
+    account_type = "DEMO" if is_demo else "REAL"
 
     return {
         "status": "ONLINE",
@@ -123,9 +182,12 @@ async def health(token: str = Depends(verify_bearer_token)):
         "algo_trading_enabled": algo_trading,
         "server_name": account_info.get("server", MT5_SERVER) if account_info else MT5_SERVER,
         "account_type": account_type,
+        "is_demo": is_demo,
+        "trade_mode": trade_mode,
         "login": account_info.get("login", MT5_LOGIN) if account_info else MT5_LOGIN,
         "broker_utc_offset_hours": utc_offset,
         "allow_trading": ALLOW_TRADING,
+        "kill_engaged": is_kill_state_active(),
         "timestamp_utc": datetime.now(timezone.utc).isoformat()
     }
 
@@ -134,11 +196,11 @@ async def health(token: str = Depends(verify_bearer_token)):
 @app.get("/account")
 async def account(token: str = Depends(verify_bearer_token)):
     if not MT5_AVAILABLE or not mt5:
-        # Diagnostic mock representation
         return {
-            "login": MT5_LOGIN,
+            "login": MT5_LOGIN or 50192834,
             "server": MT5_SERVER,
             "account_type": "DEMO",
+            "is_demo": True,
             "balance": 10000.0,
             "equity": 10000.0,
             "margin": 0.0,
@@ -151,13 +213,16 @@ async def account(token: str = Depends(verify_bearer_token)):
 
     acc = mt5.account_info()
     if not acc:
-        raise HTTPException(status_code=503, detail="Failed to retrieve MT5 account info. Verify terminal login.")
+        raise HTTPException(status_code=503, detail="Failed to retrieve MT5 account info. Verify terminal is logged in.")
 
     data = acc._asdict()
+    is_demo = is_demo_account(data.get("trade_mode"))
     return {
         "login": data.get("login"),
         "server": data.get("server"),
-        "account_type": "REAL" if data.get("trade_mode") == 0 else "DEMO",
+        "account_type": "DEMO" if is_demo else "REAL",
+        "is_demo": is_demo,
+        "trade_mode": data.get("trade_mode"),
         "balance": data.get("balance"),
         "equity": data.get("equity"),
         "margin": data.get("margin"),
@@ -208,7 +273,6 @@ async def get_candles(
     utc_offset = get_broker_utc_offset_hours()
 
     if not MT5_AVAILABLE or not mt5:
-        # Fallback diagnostic empty response
         return {
             "symbol": symbol,
             "timeframe": timeframe,
@@ -218,7 +282,6 @@ async def get_candles(
             "message": "MT5 not connected on this host."
         }
 
-    # Resolve MT5 timeframe constant
     tf_map = {
         "M1": mt5.TIMEFRAME_M1,
         "M5": mt5.TIMEFRAME_M5,
@@ -229,7 +292,6 @@ async def get_candles(
     }
     mt5_tf = tf_map.get(timeframe, mt5.TIMEFRAME_H1)
 
-    # Symbol fallback for Exness standard 'm' accounts
     target_sym = symbol
     if not mt5.symbol_info(target_sym):
         target_sym = f"{symbol}m"
@@ -239,7 +301,6 @@ async def get_candles(
         raise HTTPException(status_code=404, detail=f"No rate history found for {symbol} on broker server.")
 
     candles_out = []
-    # Normalize server timestamps to UTC
     offset_seconds = utc_offset * 3600
     for r in rates:
         candles_out.append({
@@ -275,28 +336,7 @@ async def positions(token: str = Depends(verify_bearer_token)):
     return [p._asdict() for p in pos]
 
 
-import json
-
-KILL_STATE_FILE = "kill_state.json"
-
-def is_kill_state_active() -> bool:
-    if os.path.exists(KILL_STATE_FILE):
-        try:
-            with open(KILL_STATE_FILE, "r") as f:
-                data = json.load(f)
-                return data.get("kill_engaged", False)
-        except Exception:
-            return False
-    return False
-
-def set_kill_state(engaged: bool):
-    try:
-        with open(KILL_STATE_FILE, "w") as f:
-            json.dump({"kill_engaged": engaged, "timestamp": datetime.now(timezone.utc).isoformat()}, f)
-    except Exception as e:
-        print(f"[WARN] Failed to write kill state: {e}")
-
-# 6. Read-Only Safety Protection: Orders and Modifications Blocked by Default
+# 6. Orders Guarded by Mandatory Stop-Loss and Real Account Live Gate
 class OrderRequest(BaseModel):
     symbol: str
     side: str
@@ -328,16 +368,18 @@ async def place_order(order: OrderRequest, token: str = Depends(verify_bearer_to
             detail="MANDATORY_STOP_LOSS_REQUIRED: Every order must include a verified broker stop-loss."
         )
 
-    # Check if account is real money and verify ALLOW_LIVE
+    # Strict check on account type: anything non-DEMO requires ALLOW_LIVE
     if MT5_AVAILABLE and mt5:
         acc = mt5.account_info()
-        if acc and acc.trade_mode == 0: # 0 = real account
-            allow_live = os.getenv("ALLOW_LIVE", "false").lower() in ("true", "1", "yes")
-            if not allow_live:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Live REAL account detected but ALLOW_LIVE=true is not set in bridge .env."
-                )
+        if acc:
+            is_demo = is_demo_account(getattr(acc, "trade_mode", None))
+            if not is_demo:
+                allow_live = os.getenv("ALLOW_LIVE", "false").lower() in ("true", "1", "yes")
+                if not allow_live:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Non-demo account detected (REAL or CONTEST). Live orders are blocked because ALLOW_LIVE=true is not configured in bridge environment."
+                    )
 
     return {"status": "SUCCESS", "message": "Order accepted and routed with Stop-Loss"}
 
@@ -350,15 +392,16 @@ async def emergency_kill(token: str = Depends(verify_bearer_token)):
     unclosed_tickets = []
 
     if MT5_AVAILABLE and mt5:
-        positions = mt5.positions_get()
-        if positions:
-            for p in positions:
+        positions_list = mt5.positions_get()
+        if positions_list:
+            for p in positions_list:
                 ticket = p.ticket
                 symbol = p.symbol
                 vol = p.volume
-                pos_type = p.type # 0 for buy, 1 for sell
+                pos_type = p.type
                 opp_type = mt5.ORDER_TYPE_SELL if pos_type == 0 else mt5.ORDER_TYPE_BUY
-                price = mt5.symbol_info_tick(symbol).bid if pos_type == 0 else mt5.symbol_info_tick(symbol).ask
+                tick = mt5.symbol_info_tick(symbol)
+                price = (tick.bid if pos_type == 0 else tick.ask) if tick else 0
 
                 close_request = {
                     "action": mt5.TRADE_ACTION_DEAL,
@@ -380,9 +423,9 @@ async def emergency_kill(token: str = Depends(verify_bearer_token)):
                     unclosed_tickets.append(ticket)
 
         # Cancel all pending orders
-        orders = mt5.orders_get()
-        if orders:
-            for o in orders:
+        orders_list = mt5.orders_get()
+        if orders_list:
+            for o in orders_list:
                 mt5.order_send({
                     "action": mt5.TRADE_ACTION_REMOVE,
                     "order": o.ticket
@@ -419,6 +462,5 @@ async def close_position(ticket: int, token: str = Depends(verify_bearer_token))
 
 if __name__ == "__main__":
     import uvicorn
-    # Bind strictly to loopback 127.0.0.1
-    uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=True)
-
+    # Bind strictly to loopback 127.0.0.1, reload=False as required by Stage 1
+    uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=False)

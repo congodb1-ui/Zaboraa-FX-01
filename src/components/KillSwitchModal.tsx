@@ -73,6 +73,43 @@ export const KillSwitchModal: React.FC<KillSwitchModalProps> = ({
     }
   };
 
+  const handleRetry = async () => {
+    setIsEngaging(true);
+    setLoudFailure({ hasFailed: false });
+
+    try {
+      const resp = await fetch('/api/kill-switch/retry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await resp.json();
+
+      if (!resp.ok || data.loudFailure) {
+        setLoudFailure({
+          hasFailed: true,
+          error: data.error || data.reason || 'Failed to close all open positions. Market may be closed or bridge offline.',
+          unclosedTickets: data.unclosedTickets || [],
+        });
+        setIsEngaging(false);
+        return;
+      }
+
+      onExecuteKillSwitch();
+      setIsEngaging(false);
+      setHasEngaged(true);
+      setTimeout(() => {
+        setHasEngaged(false);
+        onClose();
+      }, 2500);
+    } catch (err: any) {
+      setLoudFailure({
+        hasFailed: true,
+        error: 'Network error calling /api/kill-switch/retry.',
+      });
+      setIsEngaging(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
       <div className="bg-[#0F172A] border border-rose-600/70 rounded-xl p-6 max-w-md w-full shadow-2xl space-y-4">
@@ -84,21 +121,21 @@ export const KillSwitchModal: React.FC<KillSwitchModalProps> = ({
               </div>
               <div>
                 <h3 className="text-base font-bold text-white tracking-tight">
-                  PARTIAL LIQUIDATION FAILURE
+                  LIQUIDATION FAILURE (LOUD ALERT)
                 </h3>
-                <p className="text-xs text-amber-300">Market closed or off-quotes</p>
+                <p className="text-xs text-amber-300">Positions may remain open or bridge unreachable</p>
               </div>
             </div>
 
             <div className="p-3 bg-amber-950/40 border border-amber-500/40 rounded-lg text-xs text-amber-200 space-y-2">
-              <p>{loudFailure.error}</p>
+              <p className="font-semibold">{loudFailure.error}</p>
               {loudFailure.unclosedTickets && loudFailure.unclosedTickets.length > 0 && (
                 <div className="font-mono text-[11px] text-amber-300">
                   Unclosed Tickets: {loudFailure.unclosedTickets.join(', ')}
                 </div>
               )}
               <p className="text-[11px] text-slate-300">
-                The persistent <code>no_new_orders</code> flag has been engaged to block further entries. You can retry liquidation immediately.
+                The persistent <code>no_new_orders</code> flag remains active. All bots are stopped and pending orders cancelled.
               </p>
             </div>
 
@@ -110,12 +147,12 @@ export const KillSwitchModal: React.FC<KillSwitchModalProps> = ({
                 Close Dialog
               </button>
               <button
-                onClick={handleConfirm}
+                onClick={handleRetry}
                 disabled={isEngaging}
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white font-bold text-xs rounded-lg transition-all flex items-center gap-1.5"
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white font-bold text-xs rounded-lg transition-all flex items-center gap-1.5 shadow-md shadow-amber-950"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isEngaging ? 'animate-spin' : ''}`} />
-                {isEngaging ? 'Retrying...' : 'Retry Liquidation Now'}
+                {isEngaging ? 'Retrying Liquidation...' : 'Retry Now'}
               </button>
             </div>
           </div>

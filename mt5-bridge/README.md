@@ -37,13 +37,19 @@ pip install -r requirements.txt
 # 5. Create your .env file
 copy .env.example .env
 
-# 6. Start the bridge service on 127.0.0.1:8001
-uvicorn main:app --host 127.0.0.1 --port 8001 --reload
+# 6. Start the bridge service on 127.0.0.1:8001 (reload=False in production)
+uvicorn main:app --host 127.0.0.1 --port 8001
 ```
 
 When successfully started, you will see:
 ```text
 INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+```
+
+### Diagnostic Demo Check:
+Run this command in Python to inspect your account's trade mode:
+```powershell
+python -c "import MetaTrader5 as mt5; mt5.initialize(); print(mt5.account_info().trade_mode, mt5.ACCOUNT_TRADE_MODE_DEMO)"
 ```
 
 ---

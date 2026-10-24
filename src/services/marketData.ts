@@ -17,6 +17,7 @@ export const SYMBOL_SPECS: Record<SymbolName, SymbolSpec> = {
     swapShort: 0.8,
     currency: 'USD',
     pipValuePerLotUSD: 10.0,
+    tripleSwapDay: 3, // Wednesday triple swap
   },
   GBPUSD: {
     symbol: 'GBPUSD',
@@ -34,6 +35,7 @@ export const SYMBOL_SPECS: Record<SymbolName, SymbolSpec> = {
     swapShort: 0.5,
     currency: 'USD',
     pipValuePerLotUSD: 10.0,
+    tripleSwapDay: 3, // Wednesday triple swap
   },
   USDJPY: {
     symbol: 'USDJPY',
@@ -51,6 +53,7 @@ export const SYMBOL_SPECS: Record<SymbolName, SymbolSpec> = {
     swapShort: -8.2,
     currency: 'JPY',
     pipValuePerLotUSD: 6.56, // 1000 JPY / 152.35 ≈ $6.56
+    tripleSwapDay: 3, // Wednesday triple swap
   },
   XAUUSD: {
     symbol: 'XAUUSD',
@@ -68,6 +71,7 @@ export const SYMBOL_SPECS: Record<SymbolName, SymbolSpec> = {
     swapShort: 2.1,
     currency: 'USD',
     pipValuePerLotUSD: 100.0, // $1 move per oz * 100 oz = $100 per 1.00 USD move
+    tripleSwapDay: 3, // Wednesday triple swap
   },
 };
 

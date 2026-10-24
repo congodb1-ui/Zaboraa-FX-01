@@ -17,6 +17,7 @@ export interface SymbolSpec {
   swapShort: number;
   currency: string;
   pipValuePerLotUSD: number; // $10 for EUR/USD, dynamic for USD/JPY, $100 for XAU/USD
+  tripleSwapDay?: number; // 0=Sun, 1=Mon, 2=Tue, 3=Wed (standard for FX), 4=Thu, 5=Fri
 }
 
 export interface Candle {

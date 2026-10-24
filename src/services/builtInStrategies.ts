@@ -258,7 +258,175 @@ export const strategy = {
   },
 ];
 
-export function getStrategyExecutor(strategyId: string) {
+export interface StrategyContract {
+  name: string;
+  version: string;
+  init?: (ctx: any) => void;
+  onBar: (ctx: any, bar: Candle) => void;
+}
+
+export const smaCrossoverContract: StrategyContract = {
+  name: 'Dual SMA Dynamic Crossover',
+  version: '1.2.0',
+  init(ctx) {
+    ctx.warmupPeriod = 50;
+  },
+  onBar(ctx, bar) {
+    const fastP = ctx.params?.fastPeriod || 20;
+    const slowP = ctx.params?.slowPeriod || 50;
+    const slPips = ctx.params?.stopLossPips || 35;
+    const tpPips = ctx.params?.takeProfitPips || 70;
+
+    if (ctx.data.length < slowP + 2) return;
+
+    const closes = ctx.data.map((b: Candle) => b.close);
+    const fastSMA = calculateSMA(closes, fastP);
+    const slowSMA = calculateSMA(closes, slowP);
+
+    const currFast = fastSMA[fastSMA.length - 1];
+    const prevFast = fastSMA[fastSMA.length - 2];
+    const currSlow = slowSMA[slowSMA.length - 1];
+    const prevSlow = slowSMA[slowSMA.length - 2];
+
+    if (currFast == null || prevFast == null || currSlow == null || prevSlow == null) return;
+
+    const pipMultiplier = bar.close > 500 ? 1.0 : (bar.close > 50 ? 0.01 : 0.0001);
+
+    if (prevFast <= prevSlow && currFast > currSlow) {
+      if (ctx.openPositions.length === 0) {
+        ctx.buy(0.1, bar.close - slPips * pipMultiplier, bar.close + tpPips * pipMultiplier, 'SMA Cross Long');
+      } else if (ctx.openPositions[0].direction === 'SELL' || ctx.openPositions[0].side === 'SELL') {
+        if (ctx.close) ctx.close();
+        else if (ctx.closePosition) ctx.closePosition();
+        ctx.buy(0.1, bar.close - slPips * pipMultiplier, bar.close + tpPips * pipMultiplier, 'SMA Reverse Long');
+      }
+    } else if (prevFast >= prevSlow && currFast < currSlow) {
+      if (ctx.openPositions.length === 0) {
+        ctx.sell(0.1, bar.close + slPips * pipMultiplier, bar.close - tpPips * pipMultiplier, 'SMA Cross Short');
+      } else if (ctx.openPositions[0].direction === 'BUY' || ctx.openPositions[0].side === 'BUY') {
+        if (ctx.close) ctx.close();
+        else if (ctx.closePosition) ctx.closePosition();
+        ctx.sell(0.1, bar.close + slPips * pipMultiplier, bar.close - tpPips * pipMultiplier, 'SMA Reverse Short');
+      }
+    }
+  },
+};
+
+export const rsiReversionContract: StrategyContract = {
+  name: 'RSI Statistical Mean Reversion',
+  version: '1.0.4',
+  init(ctx) {
+    ctx.warmupPeriod = 20;
+  },
+  onBar(ctx, bar) {
+    const rsiP = ctx.params?.rsiPeriod || 14;
+    const oversold = ctx.params?.oversold || 30;
+    const overbought = ctx.params?.overbought || 70;
+    const slPips = ctx.params?.slPips || 25;
+    const tpPips = ctx.params?.tpPips || 45;
+
+    if (ctx.data.length < rsiP + 5) return;
+
+    const closes = ctx.data.map((b: Candle) => b.close);
+    const rsiSeries = calculateRSI(closes, rsiP);
+    const currRsi = rsiSeries[rsiSeries.length - 1];
+    const prevRsi = rsiSeries[rsiSeries.length - 2];
+
+    if (currRsi == null || prevRsi == null) return;
+
+    const pipMultiplier = bar.close > 500 ? 1.0 : (bar.close > 50 ? 0.01 : 0.0001);
+
+    if (prevRsi < oversold && currRsi >= oversold && ctx.openPositions.length === 0) {
+      ctx.buy(0.1, bar.close - slPips * pipMultiplier, bar.close + tpPips * pipMultiplier, 'RSI Oversold');
+    } else if (prevRsi > overbought && currRsi <= overbought && ctx.openPositions.length === 0) {
+      ctx.sell(0.1, bar.close + slPips * pipMultiplier, bar.close - tpPips * pipMultiplier, 'RSI Overbought');
+    }
+  },
+};
+
+export const bollingerBreakoutContract: StrategyContract = {
+  name: 'Bollinger Band Squeeze & Breakout',
+  version: '2.1.0',
+  init(ctx) {
+    ctx.warmupPeriod = 25;
+  },
+  onBar(ctx, bar) {
+    const bbP = ctx.params?.bbPeriod || 20;
+    const bbStd = ctx.params?.bbStdDev || 2.0;
+
+    if (ctx.data.length < bbP + 2) return;
+
+    const closes = ctx.data.map((b: Candle) => b.close);
+    const bb = calculateBollingerBands(closes, bbP, bbStd);
+
+    const upper = bb.upper[bb.upper.length - 1];
+    const lower = bb.lower[bb.lower.length - 1];
+    const middle = bb.middle[bb.middle.length - 1];
+
+    if (upper == null || lower == null || middle == null) return;
+
+    if (bar.close > upper && ctx.openPositions.length === 0) {
+      ctx.buy(0.1, middle, bar.close + (bar.close - middle) * 1.5, 'BB Upper Breakout');
+    } else if (bar.close < lower && ctx.openPositions.length === 0) {
+      ctx.sell(0.1, middle, bar.close - (middle - bar.close) * 1.5, 'BB Lower Breakout');
+    }
+  },
+};
+
+export const donchianBreakoutContract: StrategyContract = {
+  name: 'Donchian Channel Turtle Breakout',
+  version: '1.5.0',
+  init(ctx) {
+    ctx.warmupPeriod = 25;
+  },
+  onBar(ctx, bar) {
+    const entryP = ctx.params?.entryPeriod || 20;
+    if (ctx.data.length < entryP + 2) return;
+
+    const highSlice = ctx.data.slice(-entryP - 1, -1).map((c: Candle) => c.high);
+    const lowSlice = ctx.data.slice(-entryP - 1, -1).map((c: Candle) => c.low);
+    const maxHigh = Math.max(...highSlice);
+    const minLow = Math.min(...lowSlice);
+
+    const pipMultiplier = bar.close > 500 ? 1.0 : (bar.close > 50 ? 0.01 : 0.0001);
+
+    if (bar.close > maxHigh && ctx.openPositions.length === 0) {
+      ctx.buy(0.1, bar.close - 40 * pipMultiplier, bar.close + 80 * pipMultiplier, 'Donchian High Break');
+    } else if (bar.close < minLow && ctx.openPositions.length === 0) {
+      ctx.sell(0.1, bar.close + 40 * pipMultiplier, bar.close - 80 * pipMultiplier, 'Donchian Low Break');
+    }
+  },
+};
+
+export const STRATEGY_CONTRACT_REGISTRY: Record<string, StrategyContract> = {
+  strat_sma_cross: smaCrossoverContract,
+  strat_rsi_reversion: rsiReversionContract,
+  strat_bollinger_breakout: bollingerBreakoutContract,
+  strat_donchian_breakout: donchianBreakoutContract,
+};
+
+export function registerStrategyContract(id: string, contract: StrategyContract): void {
+  STRATEGY_CONTRACT_REGISTRY[id] = contract;
+}
+
+export function getStrategyExecutor(strategyId: string, customContract?: StrategyContract) {
+  let contract: StrategyContract | undefined = customContract || STRATEGY_CONTRACT_REGISTRY[strategyId];
+
+  if (!contract) {
+    const builtIn = BUILT_IN_STRATEGIES.find((s) => s.id === strategyId);
+    if (builtIn && STRATEGY_CONTRACT_REGISTRY[builtIn.id]) {
+      contract = STRATEGY_CONTRACT_REGISTRY[builtIn.id];
+    }
+  }
+
+  if (!contract) {
+    throw new Error(`UNKNOWN_STRATEGY: Strategy '${strategyId}' is not registered`);
+  }
+
+  if (typeof contract.onBar !== 'function') {
+    throw new Error(`INVALID_STRATEGY: Strategy '${strategyId}' has no executable onBar method`);
+  }
+
   return (
     ctx: {
       data: Candle[];
@@ -271,98 +439,18 @@ export function getStrategyExecutor(strategyId: string) {
       openPositions: any[];
       accountBalance: number;
       accountEquity: number;
+      close?: (ticket?: number) => void;
+      modify?: (ticket: number, sl?: number, tp?: number) => void;
+      params?: Record<string, any>;
     },
     params: Record<string, any>
   ) => {
-    const closes = ctx.data.map((c) => c.close);
-    const current = ctx.currentBar;
+    // Provide aliases and injected params
+    if (!ctx.close && ctx.closePosition) ctx.close = ctx.closePosition;
+    if (!ctx.modify && ctx.modifyPosition) ctx.modify = ctx.modifyPosition;
+    ctx.params = params;
 
-    if (strategyId === 'strat_sma_cross' || strategyId.includes('sma')) {
-      const fastP = params.fastPeriod || 20;
-      const slowP = params.slowPeriod || 50;
-      const slPips = params.stopLossPips || 35;
-      const tpPips = params.takeProfitPips || 70;
-
-      if (ctx.data.length < slowP + 2) return;
-
-      const fastSMA = calculateSMA(closes, fastP);
-      const slowSMA = calculateSMA(closes, slowP);
-
-      const currFast = fastSMA[fastSMA.length - 1];
-      const prevFast = fastSMA[fastSMA.length - 2];
-      const currSlow = slowSMA[slowSMA.length - 1];
-      const prevSlow = slowSMA[slowSMA.length - 2];
-
-      if (!currFast || !prevFast || !currSlow || !prevSlow) return;
-
-      const pipMultiplier = current.close > 500 ? 1.0 : (current.close > 50 ? 0.01 : 0.0001);
-
-      if (prevFast <= prevSlow && currFast > currSlow) {
-        if (ctx.openPositions.length === 0) {
-          ctx.buy(undefined, current.close - slPips * pipMultiplier, current.close + tpPips * pipMultiplier);
-        } else if (ctx.openPositions[0].direction === 'SELL') {
-          ctx.closePosition();
-          ctx.buy(undefined, current.close - slPips * pipMultiplier, current.close + tpPips * pipMultiplier);
-        }
-      } else if (prevFast >= prevSlow && currFast < currSlow) {
-        if (ctx.openPositions.length === 0) {
-          ctx.sell(undefined, current.close + slPips * pipMultiplier, current.close - tpPips * pipMultiplier);
-        } else if (ctx.openPositions[0].direction === 'BUY') {
-          ctx.closePosition();
-          ctx.sell(undefined, current.close + slPips * pipMultiplier, current.close - tpPips * pipMultiplier);
-        }
-      }
-    } else if (strategyId === 'strat_rsi_reversion' || strategyId.includes('rsi')) {
-      const rsiP = params.rsiPeriod || 14;
-      const oversold = params.oversold || 30;
-      const overbought = params.overbought || 70;
-      const slPips = params.slPips || 25;
-      const tpPips = params.tpPips || 45;
-
-      const rsiSeries = calculateRSI(closes, rsiP);
-      const currRsi = rsiSeries[rsiSeries.length - 1];
-      const prevRsi = rsiSeries[rsiSeries.length - 2];
-
-      if (!currRsi || !prevRsi) return;
-
-      const pipMultiplier = current.close > 500 ? 1.0 : (current.close > 50 ? 0.01 : 0.0001);
-
-      if (prevRsi < oversold && currRsi >= oversold && ctx.openPositions.length === 0) {
-        ctx.buy(undefined, current.close - slPips * pipMultiplier, current.close + tpPips * pipMultiplier);
-      } else if (prevRsi > overbought && currRsi <= overbought && ctx.openPositions.length === 0) {
-        ctx.sell(undefined, current.close + slPips * pipMultiplier, current.close - tpPips * pipMultiplier);
-      }
-    } else if (strategyId === 'strat_bollinger_breakout' || strategyId.includes('bollinger')) {
-      const bbP = params.bbPeriod || 20;
-      const bbStd = params.bbStdDev || 2.0;
-      const bb = calculateBollingerBands(closes, bbP, bbStd);
-
-      const upper = bb.upper[bb.upper.length - 1];
-      const lower = bb.lower[bb.lower.length - 1];
-      const middle = bb.middle[bb.middle.length - 1];
-
-      if (!upper || !lower || !middle) return;
-
-      if (current.close > upper && ctx.openPositions.length === 0) {
-        ctx.buy(undefined, middle, current.close + (current.close - middle) * 1.5);
-      } else if (current.close < lower && ctx.openPositions.length === 0) {
-        ctx.sell(undefined, middle, current.close - (middle - current.close) * 1.5);
-      }
-    } else {
-      const entryP = params.entryPeriod || 20;
-      if (ctx.data.length < entryP + 2) return;
-      const highSlice = ctx.data.slice(-entryP - 1, -1).map((c) => c.high);
-      const lowSlice = ctx.data.slice(-entryP - 1, -1).map((c) => c.low);
-      const maxHigh = Math.max(...highSlice);
-      const minLow = Math.min(...lowSlice);
-
-      const pipMultiplier = current.close > 500 ? 1.0 : (current.close > 50 ? 0.01 : 0.0001);
-
-      if (current.close > maxHigh && ctx.openPositions.length === 0) {
-        ctx.buy(undefined, current.close - 40 * pipMultiplier, current.close + 80 * pipMultiplier);
-      } else if (current.close < minLow && ctx.openPositions.length === 0) {
-        ctx.sell(undefined, current.close + 40 * pipMultiplier, current.close - 80 * pipMultiplier);
-      }
-    }
+    contract!.onBar(ctx, ctx.currentBar);
   };
 }
+

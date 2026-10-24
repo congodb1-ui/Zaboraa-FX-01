@@ -63,6 +63,9 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
 
   // Execution State
   const [isRunning, setIsRunning] = useState(false);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [jobProgress, setJobProgress] = useState<number>(0);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -75,7 +78,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
     (d) => d.symbol === symbol && d.timeframe === timeframe
   ) || datasets.find((d) => d.symbol === symbol);
 
-  const handleRun = () => {
+  const handleRun = async () => {
     if (!selectedStrategy) return;
     if (!activeDataset || activeDataset.candles.length === 0) {
       alert(`Cannot run backtest: No research dataset loaded for ${symbol} (${timeframe}). Please import a CSV or fetch via MT5 Bridge.`);
@@ -83,6 +86,8 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
     }
 
     setIsRunning(true);
+    setJobProgress(10);
+    setErrorMessage(null);
     setAiAnalysis(null);
 
     const config: BacktestConfig = {
@@ -107,16 +112,74 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
       provenance: activeDataset.provenance,
     };
 
-    setTimeout(() => {
-      const executor = getStrategyExecutor(selectedStrategy.id);
-      const res = runBacktest(activeDataset.candles, config, executor);
-      setResult({
-        ...res,
-        provenance: activeDataset.provenance,
-        barCount: activeDataset.candles.length,
+    try {
+      const startRes = await fetch('/api/jobs/backtest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config,
+          symbol,
+          timeframe,
+          candles: activeDataset.candles,
+          strategyCode: selectedStrategy.code,
+        }),
       });
+
+      if (!startRes.ok) {
+        const errData = await startRes.json();
+        throw new Error(errData.error || 'Failed to submit backtest job');
+      }
+
+      const { jobId } = await startRes.json();
+      setActiveJobId(jobId);
+
+      const pollInterval = setInterval(async () => {
+        try {
+          const pollRes = await fetch(`/api/jobs/${jobId}`);
+          if (pollRes.ok) {
+            const jobData = await pollRes.json();
+            setJobProgress(jobData.progress || 20);
+
+            if (jobData.status === 'COMPLETED' && jobData.result) {
+              clearInterval(pollInterval);
+              setResult({
+                ...jobData.result,
+                provenance: activeDataset.provenance,
+                barCount: activeDataset.candles.length,
+              });
+              setIsRunning(false);
+              setActiveJobId(null);
+            } else if (jobData.status === 'FAILED') {
+              clearInterval(pollInterval);
+              setErrorMessage(jobData.errorMessage || jobData.error || 'Backtest failed');
+              setIsRunning(false);
+              setActiveJobId(null);
+            } else if (jobData.status === 'CANCELLED') {
+              clearInterval(pollInterval);
+              setIsRunning(false);
+              setActiveJobId(null);
+            }
+          }
+        } catch (err: any) {
+          clearInterval(pollInterval);
+          setIsRunning(false);
+          setActiveJobId(null);
+          setErrorMessage(err.message || 'Error polling backtest progress');
+        }
+      }, 200);
+    } catch (err: any) {
       setIsRunning(false);
-    }, 350);
+      setErrorMessage(err.message || 'Backtest execution error');
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!activeJobId) return;
+    try {
+      await fetch(`/api/jobs/${activeJobId}/cancel`, { method: 'POST' });
+    } catch (_) {}
+    setIsRunning(false);
+    setActiveJobId(null);
   };
 
   const handleFetchAiAnalysis = async () => {
@@ -177,24 +240,41 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
             </p>
           </div>
 
-          <button
-            onClick={handleRun}
-            disabled={isRunning}
-            className="px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-bold text-xs rounded-lg transition-all flex items-center gap-1.5 shadow-md shadow-blue-900/30"
-          >
-            {isRunning ? (
-              <>
-                <RotateCcw className="w-3.5 h-3.5 animate-spin" />
-                <span>Simulating Bar-by-Bar...</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-3.5 h-3.5" />
-                <span>Run Realistic Backtest</span>
-              </>
+          <div className="flex items-center gap-2">
+            {isRunning && (
+              <button
+                onClick={handleCancel}
+                className="px-3 py-2 bg-red-950/80 hover:bg-red-900 border border-red-700/60 text-red-300 font-bold text-xs rounded-lg transition-all"
+              >
+                Cancel
+              </button>
             )}
-          </button>
+            <button
+              onClick={handleRun}
+              disabled={isRunning}
+              className="px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-bold text-xs rounded-lg transition-all flex items-center gap-1.5 shadow-md shadow-blue-900/30"
+            >
+              {isRunning ? (
+                <>
+                  <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Simulating in QuickJS ({jobProgress}%)...</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-3.5 h-3.5" />
+                  <span>Run Realistic Backtest</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
+
+        {errorMessage && (
+          <div className="mb-4 p-3 bg-red-950/40 border border-red-500/50 rounded-lg text-xs text-red-200 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+            <span>{errorMessage}</span>
+          </div>
+        )}
 
         {/* Empty Catalog Warning */}
         {(!activeDataset || activeDataset.candles.length === 0) && (

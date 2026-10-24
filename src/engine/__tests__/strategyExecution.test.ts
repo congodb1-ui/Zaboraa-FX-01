@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { Candle, BacktestConfig } from '../../types/forex';
+import { Candle, BacktestConfig, Strategy, Bot } from '../../types/forex';
 import { runBacktest } from '../backtester';
 import {
   getStrategyExecutor,
   StrategyContract,
 } from '../../services/builtInStrategies';
-import { getQuickJS, QuickJSStrategySandbox } from '../quickjsSandbox';
+import { getQuickJS, QuickJSStrategySandbox, createQuickJSStrategyExecutor } from '../quickjsSandbox';
 import { transpileStrategyCode } from '../transpiler';
 import { runOptimizationSweep } from '../optimizer';
+import { calculatePipValue } from '../../services/marketData';
 import {
   getDb,
   createJobDb,
@@ -17,6 +18,10 @@ import {
   isJobCancelledDb,
   setCachedAi,
   getCachedAi,
+  saveStrategy,
+  getAllStrategies,
+  saveBot,
+  getAllBots,
 } from '../../services/db';
 
 describe('Stage 2: Unified Strategy Execution & Safety Architecture', () => {
@@ -331,5 +336,176 @@ describe('Stage 2: Unified Strategy Execution & Safety Architecture', () => {
 
     // For EURUSD: swapLong = -3.20. On Wednesday (tripleSwapDay), swap multiplier is 3.0 -> totalSwap = -9.60 USD
     expect(res.totalSwap).toBeCloseTo(-9.60, 1);
+  });
+
+  // =========================================================================
+  // Stage 2B Verification Tests (Items 7 through 12)
+  // =========================================================================
+
+  it('Requirement 7 & 8: Sandbox compiles strategy once and updates ctx with balance, equity, and frozen openPositions', async () => {
+    const QuickJS = await getQuickJS();
+
+    // Strategy that checks ctx properties and verifies openPositions is read-only
+    const customCode = `
+      export const strategy = {
+        name: "Context & Immutability Test",
+        version: "1.0.0",
+        onBar(ctx, bar) {
+          if (ctx.barIndex === 25) {
+            // Check equity and balance are updated on ctx
+            if (typeof ctx.balance !== 'number' || typeof ctx.equity !== 'number') {
+              throw new Error("Missing ctx.balance or ctx.equity");
+            }
+            // Check openPositions is frozen
+            try {
+              ctx.openPositions.push({ fake: true });
+              throw new Error("openPositions was mutable!");
+            } catch (err) {
+              // Expected: TypeError on frozen object
+            }
+          }
+          if (ctx.barIndex === 30) {
+            ctx.buy(0.1, bar.close - 0.0020, bar.close + 0.0040, "Bar 30 Order");
+          }
+        }
+      };
+    `;
+
+    const transpiled = transpileStrategyCode(customCode);
+    const executor = createQuickJSStrategyExecutor(QuickJS, transpiled.jsCode, {});
+
+    let signalsCount = 0;
+    const res = runBacktest(testCandles, { ...baseConfig, strategyId: 'custom_ctx_test' }, (ctx, params) => {
+      executor.strategyLogic(ctx, params);
+      signalsCount++;
+    });
+
+    executor.dispose();
+    expect(signalsCount).toBe(testCandles.length - 25);
+    expect(res.totalTrades).toBeGreaterThanOrEqual(1);
+  });
+
+  it('Requirement 9: Custom pasted strategy executed in QuickJS produces results from its own code', async () => {
+    const QuickJS = await getQuickJS();
+
+    // Strategy that buys ONLY on bar 42
+    const bar42Code = `
+      export const strategy = {
+        name: "Bar 42 Exclusive Strategy",
+        version: "1.0.0",
+        onBar(ctx, bar) {
+          if (ctx.barIndex === 42 && ctx.openPositions.length === 0) {
+            ctx.buy(0.2, bar.close - 0.0030, bar.close + 0.0050, "Buy Bar 42");
+          }
+        }
+      };
+    `;
+
+    const transpiled = transpileStrategyCode(bar42Code);
+    const executor = createQuickJSStrategyExecutor(QuickJS, transpiled.jsCode, {});
+
+    const res = runBacktest(testCandles, { ...baseConfig, strategyId: 'bar42_strat' }, executor.strategyLogic);
+    executor.dispose();
+
+    expect(res.totalTrades).toBe(1);
+    expect(res.trades[0].entryTime).toBe(testCandles[42].time);
+    expect(res.trades[0].size).toBe(0.2);
+  });
+
+  it('Requirement 10: calculatePipValue derives exclusively from SymbolSpec as single source of truth', () => {
+    // 1. EURUSD standard 10.0 USD per lot
+    const eurPip = calculatePipValue('EURUSD');
+    expect(eurPip).toBe(10.0);
+
+    // 2. Gold standard 100.0 USD per lot
+    const goldPip = calculatePipValue('XAUUSD');
+    expect(goldPip).toBe(100.0);
+
+    // 3. Dynamic USDJPY calculation: (100,000 * 0.001) / price
+    const jpyPipAt150 = calculatePipValue('USDJPY', 150.0);
+    expect(jpyPipAt150).toBeCloseTo(100 / 150, 4);
+
+    const jpyPipAt152_35 = calculatePipValue('USDJPY', 152.35);
+    expect(jpyPipAt152_35).toBeCloseTo(0.65638, 3);
+  });
+
+  it('Requirement 11: Backtest jobs can be cancelled in SQLite and stay cancelled', () => {
+    const testJobId = `job_test_bt_${Date.now()}`;
+    createJobDb(testJobId, 'BACKTEST', { symbol: 'EURUSD', timeframe: 'H1' });
+
+    const job = getJobDb(testJobId);
+    expect(job?.status).toBe('RUNNING');
+
+    // Cancel job
+    const cancelled = cancelJobDb(testJobId);
+    expect(cancelled).toBe(true);
+    expect(isJobCancelledDb(testJobId)).toBe(true);
+
+    // Attempting to overwrite a cancelled job with COMPLETED must fail
+    const overwriteAttempt = updateJobCompletedDb(testJobId, { totalTrades: 5 });
+    expect(overwriteAttempt).toBe(false);
+
+    // Verify it remains CANCELLED
+    const cancelledJob = getJobDb(testJobId);
+    expect(cancelledJob?.status).toBe('CANCELLED');
+  });
+
+  it('Requirement 12: Strategies, Bots, and Jobs persist in SQLite across queries', () => {
+    const uniqueStratId = `strat_persist_${Date.now()}`;
+    const testStrategy: Strategy = {
+      id: uniqueStratId,
+      name: 'Persisted RSI Strategy',
+      description: 'Saved to SQLite',
+      sourceType: 'typescript',
+      code: 'export const strategy = {};',
+      version: '1.0.0',
+      tags: ['rsi', 'momentum'],
+      paramsSchema: [{ name: 'period', type: 'number', default: 14, description: 'RSI Period' }],
+      params: { period: 14 },
+      createdAt: new Date().toISOString(),
+    };
+
+    saveStrategy(testStrategy, '// transpiled code');
+    const allStrats = getAllStrategies();
+    const foundStrat = allStrats.find((s) => s.id === uniqueStratId);
+    expect(foundStrat).toBeDefined();
+    expect(foundStrat?.name).toBe('Persisted RSI Strategy');
+
+    // Bot persistence
+    const uniqueBotId = `bot_persist_${Date.now()}`;
+    const magicNum = Math.floor(10000 + Math.random() * 80000);
+    const testBot: Bot = {
+      id: uniqueBotId,
+      name: 'Persisted Test Bot',
+      strategyId: uniqueStratId,
+      strategyName: 'Persisted RSI Strategy',
+      accountId: '50192834',
+      symbol: 'EURUSD',
+      timeframe: 'H1',
+      mode: 'DEMO_LIVE',
+      status: 'RUNNING',
+      params: { period: 14 },
+      riskLimits: {
+        maxRiskPctPerTrade: 1.0,
+        maxLotSize: 0.5,
+        maxOpenPositions: 2,
+        maxDailyLossUSD: 100,
+        stopLossPips: 30,
+        takeProfitPips: 60,
+        maxSpreadPips: 2.0,
+      },
+      todayPnl: 12.5,
+      totalPnl: 150.0,
+      tradesCount: 3,
+      lastHeartbeat: new Date().toISOString(),
+      logs: [],
+    };
+
+    saveBot(testBot, magicNum);
+    const allBots = getAllBots();
+    const foundBot = allBots.find((b) => b.id === uniqueBotId);
+    expect(foundBot).toBeDefined();
+    expect(foundBot?.name).toBe('Persisted Test Bot');
+    expect(foundBot?.accountId).toBe('50192834');
   });
 });

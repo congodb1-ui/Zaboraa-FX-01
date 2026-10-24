@@ -215,6 +215,7 @@ export default function App() {
       });
       if (res.ok) {
         const data = await res.json();
+        setBridgeToken(token);
         setBridgeStatus({
           isOnline: true,
           serverName: data.server_name || 'Exness-MT5Trial9',
@@ -239,11 +240,17 @@ export default function App() {
     return false;
   };
 
+  const [bridgeToken, setBridgeToken] = useState<string>('');
+
   // Fetch dataset from MT5 Bridge
   const handleFetchFromBridge = async (symbol: SymbolName, tf: Timeframe): Promise<boolean> => {
     try {
+      const headers: Record<string, string> = {};
+      if (bridgeToken) {
+        headers['Authorization'] = `Bearer ${bridgeToken}`;
+      }
       const res = await fetch(`http://127.0.0.1:8001/candles?symbol=${symbol}&timeframe=${tf}&count=400`, {
-        headers: { Authorization: `Bearer zaboraa_local_bridge_token_9872` },
+        headers,
       });
       if (res.ok) {
         const data = await res.json();
@@ -415,6 +422,27 @@ export default function App() {
     setBots((prev) => prev.map((b) => ({ ...b, status: 'STOPPED' })));
   };
 
+  // Load strategies & bots from SQLite on startup
+  useEffect(() => {
+    fetch('/api/strategies')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && Array.isArray(data) && data.length > 0) {
+          setStrategies(data);
+        }
+      })
+      .catch(() => {});
+
+    fetch('/api/bots')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && Array.isArray(data) && data.length > 0) {
+          setBots(data);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const handleSaveStrategy = (strat: Strategy) => {
     setStrategies((prev) => {
       const idx = prev.findIndex((s) => s.id === strat.id);
@@ -425,6 +453,30 @@ export default function App() {
       }
       return [strat, ...prev];
     });
+
+    fetch('/api/strategies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy: strat }),
+    }).catch(() => {});
+  };
+
+  const handleUpdateBotStatus = (id: string, status: Bot['status']) => {
+    setBots((prev) => prev.map((b) => (b.id === id ? { ...b, status } : b)));
+    fetch(`/api/bots/${id}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    }).catch(() => {});
+  };
+
+  const handleCreateBot = (newBot: Bot) => {
+    setBots((prev) => [newBot, ...prev]);
+    fetch('/api/bots', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bot: newBot }),
+    }).catch(() => {});
   };
 
   // Generate fallback display candles for chart if no dataset loaded yet
@@ -536,10 +588,8 @@ export default function App() {
               bots={bots}
               strategies={strategies}
               account={account}
-              onUpdateBotStatus={(id, st) =>
-                setBots((prev) => prev.map((b) => (b.id === id ? { ...b, status: st } : b)))
-              }
-              onCreateBot={(bot) => setBots((prev) => [bot, ...prev])}
+              onUpdateBotStatus={handleUpdateBotStatus}
+              onCreateBot={handleCreateBot}
             />
           )}
 

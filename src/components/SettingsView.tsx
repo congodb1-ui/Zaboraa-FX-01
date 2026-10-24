@@ -37,7 +37,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 }) => {
   // Bridge connection state
   const [bridgeUrl, setBridgeUrl] = useState('http://127.0.0.1:8001');
-  const [bridgeToken, setBridgeToken] = useState('zaboraa_local_bridge_token_9872');
+  const [bridgeToken, setBridgeToken] = useState('');
   const [isTestingBridge, setIsTestingBridge] = useState(false);
   const [bridgeTestMessage, setBridgeTestMessage] = useState<{ text: string; success: boolean } | null>(null);
 

@@ -337,9 +337,11 @@ export class QuickJSStrategySandbox {
           warmupPeriod: 20,
           barIndex: 0,
           currentBar: null,
+          balance: ${accountState.balance},
+          equity: ${accountState.equity},
           accountBalance: ${accountState.balance},
           accountEquity: ${accountState.equity},
-          openPositions: [],
+          openPositions: Object.freeze([]),
           data: new Proxy([], {
             get(target, prop) {
               if (prop === 'length') return __currentBarIndex + 1;
@@ -378,12 +380,15 @@ export class QuickJSStrategySandbox {
           if (!bar) return;
           __ctx.barIndex = idx;
           __ctx.currentBar = bar;
+          __ctx.balance = bal;
+          __ctx.equity = eq;
           __ctx.accountBalance = bal;
           __ctx.accountEquity = eq;
           try {
-            __ctx.openPositions = JSON.parse(posJson);
+            var parsed = JSON.parse(posJson);
+            __ctx.openPositions = Object.freeze(Array.isArray(parsed) ? parsed.map(function(p) { return Object.freeze(p); }) : []);
           } catch(e) {
-            __ctx.openPositions = [];
+            __ctx.openPositions = Object.freeze([]);
           }
           __onBarFn(__ctx, bar);
         }
@@ -441,4 +446,305 @@ export class QuickJSStrategySandbox {
       executionTimeMs: Date.now() - startTime,
     };
   }
+}
+
+/**
+ * Creates a synchronous strategy executor for runBacktest using QuickJS.
+ * Compiles the strategy code ONCE into a persistent context and calls onBar per bar.
+ */
+export function createQuickJSStrategyExecutor(
+  QuickJS: QuickJSWASMModule,
+  jsCode: string,
+  params: Record<string, any>,
+  options?: { isCancelled?: () => boolean; barTimeoutMs?: number; memoryLimitBytes?: number }
+): {
+  strategyLogic: (ctx: any, p: Record<string, any>) => void;
+  dispose: () => void;
+} {
+  const envMemoryMb = typeof process !== 'undefined' && process.env?.SANDBOX_MEMORY_MB ? parseInt(process.env.SANDBOX_MEMORY_MB, 10) : 32;
+  const envTimeoutMs = typeof process !== 'undefined' && process.env?.SANDBOX_BAR_TIMEOUT_MS ? parseInt(process.env.SANDBOX_BAR_TIMEOUT_MS, 10) : 50;
+  const memoryLimitBytes = options?.memoryLimitBytes ?? envMemoryMb * 1024 * 1024;
+  const barTimeoutMs = options?.barTimeoutMs ?? envTimeoutMs;
+  const isCancelled = options?.isCancelled;
+
+  const vm = QuickJS.newContext();
+  const runtime = vm.runtime;
+  runtime.setMemoryLimit(memoryLimitBytes);
+
+  let currentBarDeadline = 0;
+  runtime.setInterruptHandler(() => {
+    if (isCancelled && isCancelled()) {
+      return true;
+    }
+    if (currentBarDeadline > 0 && Date.now() > currentBarDeadline) {
+      return true;
+    }
+    return false;
+  });
+
+  const activeHandles: any[] = [];
+  let currentCtx: any = null;
+
+  // 1. Host Order Functions bound directly to current backtester ctx
+  const buyHandle = vm.newFunction('host_buy', (sizeHandle, slHandle, tpHandle, commentHandle) => {
+    if (!currentCtx) return vm.undefined;
+    const size = vm.dump(sizeHandle);
+    const sl = vm.dump(slHandle);
+    const tp = vm.dump(tpHandle);
+    const comment = vm.dump(commentHandle);
+    currentCtx.buy(
+      typeof size === 'number' ? size : undefined,
+      typeof sl === 'number' ? sl : undefined,
+      typeof tp === 'number' ? tp : undefined,
+      typeof comment === 'string' ? comment : undefined
+    );
+    return vm.undefined;
+  });
+  activeHandles.push(buyHandle);
+  vm.setProp(vm.global, 'host_buy', buyHandle);
+
+  const sellHandle = vm.newFunction('host_sell', (sizeHandle, slHandle, tpHandle, commentHandle) => {
+    if (!currentCtx) return vm.undefined;
+    const size = vm.dump(sizeHandle);
+    const sl = vm.dump(slHandle);
+    const tp = vm.dump(tpHandle);
+    const comment = vm.dump(commentHandle);
+    currentCtx.sell(
+      typeof size === 'number' ? size : undefined,
+      typeof sl === 'number' ? sl : undefined,
+      typeof tp === 'number' ? tp : undefined,
+      typeof comment === 'string' ? comment : undefined
+    );
+    return vm.undefined;
+  });
+  activeHandles.push(sellHandle);
+  vm.setProp(vm.global, 'host_sell', sellHandle);
+
+  const closeHandle = vm.newFunction('host_close', (ticketHandle) => {
+    if (!currentCtx) return vm.undefined;
+    const ticket = vm.dump(ticketHandle);
+    currentCtx.close(typeof ticket === 'number' ? ticket : undefined);
+    return vm.undefined;
+  });
+  activeHandles.push(closeHandle);
+  vm.setProp(vm.global, 'host_close', closeHandle);
+
+  const modifyHandle = vm.newFunction('host_modify', (ticketHandle, slHandle, tpHandle) => {
+    if (!currentCtx) return vm.undefined;
+    const ticket = vm.dump(ticketHandle);
+    const sl = vm.dump(slHandle);
+    const tp = vm.dump(tpHandle);
+    if (typeof ticket === 'number') {
+      currentCtx.modify(ticket, typeof sl === 'number' ? sl : undefined, typeof tp === 'number' ? tp : undefined);
+    }
+    return vm.undefined;
+  });
+  activeHandles.push(modifyHandle);
+  vm.setProp(vm.global, 'host_modify', modifyHandle);
+
+  // 2. host_get_bar
+  const getBarHandle = vm.newFunction('host_get_bar', (idxHandle) => {
+    if (!currentCtx) return vm.undefined;
+    const idx = vm.dump(idxHandle);
+    if (typeof idx !== 'number' || idx < 0 || idx > currentCtx.barIndex) {
+      return vm.undefined;
+    }
+    const b = currentCtx.data[idx];
+    if (!b) return vm.undefined;
+    const barObj = vm.newObject();
+    vm.setProp(barObj, 'time', vm.newNumber(b.time));
+    vm.setProp(barObj, 'open', vm.newNumber(b.open));
+    vm.setProp(barObj, 'high', vm.newNumber(b.high));
+    vm.setProp(barObj, 'low', vm.newNumber(b.low));
+    vm.setProp(barObj, 'close', vm.newNumber(b.close));
+    vm.setProp(barObj, 'tickVolume', vm.newNumber(b.tickVolume || 0));
+    vm.setProp(barObj, 'spread', vm.newNumber(b.spread || 0));
+    return barObj;
+  });
+  activeHandles.push(getBarHandle);
+  vm.setProp(vm.global, 'host_get_bar', getBarHandle);
+
+  // Indicator host functions
+  const smaHandle = vm.newFunction('host_sma', (pHandle, offsetHandle) => {
+    if (!currentCtx) return vm.null;
+    const val = currentCtx.sma ? currentCtx.sma(vm.dump(pHandle) || 14, vm.dump(offsetHandle) || 0) : null;
+    return val !== null && !isNaN(val) ? vm.newNumber(val) : vm.null;
+  });
+  activeHandles.push(smaHandle);
+  vm.setProp(vm.global, 'host_sma', smaHandle);
+
+  const emaHandle = vm.newFunction('host_ema', (pHandle, offsetHandle) => {
+    if (!currentCtx) return vm.null;
+    const val = currentCtx.ema ? currentCtx.ema(vm.dump(pHandle) || 14, vm.dump(offsetHandle) || 0) : null;
+    return val !== null && !isNaN(val) ? vm.newNumber(val) : vm.null;
+  });
+  activeHandles.push(emaHandle);
+  vm.setProp(vm.global, 'host_ema', emaHandle);
+
+  const rsiHandle = vm.newFunction('host_rsi', (pHandle, offsetHandle) => {
+    if (!currentCtx) return vm.null;
+    const val = currentCtx.rsi ? currentCtx.rsi(vm.dump(pHandle) || 14, vm.dump(offsetHandle) || 0) : null;
+    return val !== null && !isNaN(val) ? vm.newNumber(val) : vm.null;
+  });
+  activeHandles.push(rsiHandle);
+  vm.setProp(vm.global, 'host_rsi', rsiHandle);
+
+  const atrHandle = vm.newFunction('host_atr', (pHandle, offsetHandle) => {
+    if (!currentCtx) return vm.null;
+    const val = currentCtx.atr ? currentCtx.atr(vm.dump(pHandle) || 14, vm.dump(offsetHandle) || 0) : null;
+    return val !== null && !isNaN(val) ? vm.newNumber(val) : vm.null;
+  });
+  activeHandles.push(atrHandle);
+  vm.setProp(vm.global, 'host_atr', atrHandle);
+
+  const donchianHandle = vm.newFunction('host_donchian', (pHandle, offsetHandle) => {
+    if (!currentCtx) return vm.null;
+    const res = currentCtx.donchian ? currentCtx.donchian(vm.dump(pHandle) || 20, vm.dump(offsetHandle) || 0) : null;
+    if (!res) return vm.null;
+    const obj = vm.newObject();
+    vm.setProp(obj, 'high', vm.newNumber(res.high));
+    vm.setProp(obj, 'low', vm.newNumber(res.low));
+    vm.setProp(obj, 'middle', vm.newNumber(res.middle));
+    return obj;
+  });
+  activeHandles.push(donchianHandle);
+  vm.setProp(vm.global, 'host_donchian', donchianHandle);
+
+  const bollingerHandle = vm.newFunction('host_bollinger', (pHandle, stdHandle, offsetHandle) => {
+    if (!currentCtx) return vm.null;
+    const res = currentCtx.bollinger ? currentCtx.bollinger(vm.dump(pHandle) || 20, vm.dump(stdHandle) || 2.0, vm.dump(offsetHandle) || 0) : null;
+    if (!res) return vm.null;
+    const obj = vm.newObject();
+    vm.setProp(obj, 'middle', vm.newNumber(res.middle));
+    vm.setProp(obj, 'upper', vm.newNumber(res.upper));
+    vm.setProp(obj, 'lower', vm.newNumber(res.lower));
+    return obj;
+  });
+  activeHandles.push(bollingerHandle);
+  vm.setProp(vm.global, 'host_bollinger', bollingerHandle);
+
+  const crossHandle = vm.newFunction('host_crossover', (c1H, c2H, p1H, p2H) => {
+    const c1 = vm.dump(c1H);
+    const c2 = vm.dump(c2H);
+    const p1 = vm.dump(p1H);
+    const p2 = vm.dump(p2H);
+    return vm.newNumber((p1 <= p2 && c1 > c2) ? 1 : 0);
+  });
+  activeHandles.push(crossHandle);
+  vm.setProp(vm.global, 'host_crossover', crossHandle);
+
+  // Compile ONCE
+  const harnessCode = `
+    var module = { exports: {} };
+    var exports = module.exports;
+    ${jsCode}
+    var __strategy = (module.exports && module.exports.strategy) || (exports && exports.strategy) || (typeof strategy !== 'undefined' ? strategy : null);
+    if (!__strategy) {
+      throw new Error("Strategy object not found in exports. Please export 'const strategy = {...}'.");
+    }
+    if (typeof __strategy.onBar !== 'function') {
+      throw new Error("Strategy must define an onBar(ctx, bar) function.");
+    }
+
+    var __currentBarIndex = 0;
+    var __ctx = {
+      params: ${JSON.stringify(params)},
+      warmupPeriod: 20,
+      barIndex: 0,
+      currentBar: null,
+      balance: 10000,
+      equity: 10000,
+      accountBalance: 10000,
+      accountEquity: 10000,
+      openPositions: Object.freeze([]),
+      data: new Proxy([], {
+        get(target, prop) {
+          if (prop === 'length') return __currentBarIndex + 1;
+          var n = Number(prop);
+          if (!isNaN(n)) {
+            if (n > __currentBarIndex) {
+              throw new Error("CANARY_LOOKAHEAD_VIOLATION: Attempted access to future bar index " + n + " while on bar " + __currentBarIndex);
+            }
+            return host_get_bar(n);
+          }
+          return target[prop];
+        }
+      }),
+      buy: function(size, sl, tp, comment) { host_buy(size, sl, tp, comment); },
+      sell: function(size, sl, tp, comment) { host_sell(size, sl, tp, comment); },
+      close: function(ticket) { host_close(ticket); },
+      modify: function(ticket, sl, tp) { host_modify(ticket, sl, tp); },
+      sma: function(period, offset) { return host_sma(period, offset || 0); },
+      ema: function(period, offset) { return host_ema(period, offset || 0); },
+      rsi: function(period, offset) { return host_rsi(period, offset || 0); },
+      atr: function(period, offset) { return host_atr(period, offset || 0); },
+      donchian: function(period, offset) { return host_donchian(period, offset || 0); },
+      bollinger: function(period, stdDev, offset) { return host_bollinger(period, stdDev || 2.0, offset || 0); },
+      crossover: function(c1, c2, p1, p2) { return host_crossover(c1, c2, p1, p2) === 1; }
+    };
+
+    if (__strategy.init) {
+      __strategy.init(__ctx);
+    }
+
+    var __onBarFn = __strategy.onBar;
+
+    function __dispatchBar(idx, bal, eq, posJson) {
+      __currentBarIndex = idx;
+      var bar = host_get_bar(idx);
+      if (!bar) return;
+      __ctx.barIndex = idx;
+      __ctx.currentBar = bar;
+      __ctx.balance = bal;
+      __ctx.equity = eq;
+      __ctx.accountBalance = bal;
+      __ctx.accountEquity = eq;
+      try {
+        var parsed = JSON.parse(posJson);
+        __ctx.openPositions = Object.freeze(Array.isArray(parsed) ? parsed.map(function(p) { return Object.freeze(p); }) : []);
+      } catch(e) {
+        __ctx.openPositions = Object.freeze([]);
+      }
+      __onBarFn(__ctx, bar);
+    }
+  `;
+
+  currentBarDeadline = Date.now() + 3000;
+  const compileRes = vm.evalCode(harnessCode);
+  if (compileRes.error) {
+    const errorMsg = vm.dump(compileRes.error);
+    compileRes.error.dispose();
+    const errStr = typeof errorMsg === 'string' ? errorMsg : (errorMsg?.message || JSON.stringify(errorMsg));
+    vm.dispose();
+    throw new Error(`Strategy compilation error: ${errStr}`);
+  }
+  compileRes.value.dispose();
+
+  return {
+    strategyLogic: (ctx: any, _params: Record<string, any>) => {
+      currentCtx = ctx;
+      currentBarDeadline = Date.now() + barTimeoutMs;
+      const posJson = JSON.stringify(ctx.openPositions || []);
+      const dispatchCode = `__dispatchBar(${ctx.barIndex}, ${ctx.accountBalance}, ${ctx.accountEquity}, ${JSON.stringify(posJson)})`;
+      const res = vm.evalCode(dispatchCode);
+      if (res.error) {
+        const errorMsg = vm.dump(res.error);
+        res.error.dispose();
+        const errStr = typeof errorMsg === 'string' ? errorMsg : (errorMsg?.message || JSON.stringify(errorMsg));
+        throw new Error(`Execution error on bar ${ctx.barIndex}: ${errStr}`);
+      }
+      res.value.dispose();
+    },
+    dispose: () => {
+      currentBarDeadline = 0;
+      for (const h of activeHandles) {
+        try {
+          if (h && typeof h.dispose === 'function') h.dispose();
+        } catch (_) {}
+      }
+      try {
+        vm.dispose();
+      } catch (_) {}
+    },
+  };
 }

@@ -352,6 +352,36 @@ export function getAllStrategies(): Strategy[] {
   }));
 }
 
+export function getStrategyById(id: string): { strategy: Strategy; transpiledJs?: string } | null {
+  const db = getDb();
+  const r = db.prepare('SELECT * FROM strategies WHERE id = ?').get(id) as any;
+  if (!r) return null;
+  return {
+    strategy: {
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      sourceType: r.source_type,
+      code: r.code,
+      paramsSchema: JSON.parse(r.params_schema || '[]'),
+      params: JSON.parse(r.params || '{}'),
+      version: r.version,
+      author: r.author,
+      licenseNote: r.license,
+      pineSource: r.pine_source,
+      tags: JSON.parse(r.tags || '[]'),
+      createdAt: r.created_at,
+    },
+    transpiledJs: r.transpiled_js || undefined,
+  };
+}
+
+export function deleteStrategy(id: string): boolean {
+  const db = getDb();
+  const res = db.prepare('DELETE FROM strategies WHERE id = ?').run(id);
+  return Number(res.changes) > 0;
+}
+
 // ==========================================
 // ORDER LIFECYCLE & RECONCILIATION
 // ==========================================
@@ -428,7 +458,58 @@ export function getPendingOrders(): OrderRecord[] {
     comment: r.comment,
     createdAt: r.created_at,
     filledAt: r.filled_at,
+    errorReason: r.error_reason,
   }));
+}
+
+export function getOrderById(id: string): OrderRecord | null {
+  const db = getDb();
+  const r = db.prepare('SELECT * FROM orders WHERE id = ?').get(id) as any;
+  if (!r) return null;
+  return {
+    id: r.id,
+    idempotencyKey: r.idempotency_key,
+    botId: r.bot_id,
+    magicNumber: r.magic_number,
+    ticket: r.ticket ?? undefined,
+    symbol: r.symbol,
+    side: r.side,
+    volume: r.volume,
+    intentPrice: r.intent_price,
+    fillPrice: r.fill_price ?? undefined,
+    sl: r.sl,
+    tp: r.tp ?? undefined,
+    status: r.status,
+    comment: r.comment,
+    createdAt: r.created_at,
+    filledAt: r.filled_at ?? undefined,
+    errorReason: r.error_reason ?? undefined,
+  };
+}
+
+export function getOrderByTicket(ticket: number): OrderRecord | null {
+  const db = getDb();
+  const r = db.prepare('SELECT * FROM orders WHERE ticket = ?').get(ticket) as any;
+  if (!r) return null;
+  return {
+    id: r.id,
+    idempotencyKey: r.idempotency_key,
+    botId: r.bot_id,
+    magicNumber: r.magic_number,
+    ticket: r.ticket ?? undefined,
+    symbol: r.symbol,
+    side: r.side,
+    volume: r.volume,
+    intentPrice: r.intent_price,
+    fillPrice: r.fill_price ?? undefined,
+    sl: r.sl,
+    tp: r.tp ?? undefined,
+    status: r.status,
+    comment: r.comment,
+    createdAt: r.created_at,
+    filledAt: r.filled_at ?? undefined,
+    errorReason: r.error_reason ?? undefined,
+  };
 }
 
 // ==========================================
@@ -538,6 +619,18 @@ export function getAllBots(): Bot[] {
     lastHeartbeat: r.last_heartbeat || new Date().toISOString(),
     logs: [],
   }));
+}
+
+export function updateBotStatusDb(id: string, status: string): boolean {
+  const db = getDb();
+  const res = db.prepare('UPDATE bots SET status = ?, last_heartbeat = ? WHERE id = ?').run(status, new Date().toISOString(), id);
+  return Number(res.changes) > 0;
+}
+
+export function deleteBotDb(id: string): boolean {
+  const db = getDb();
+  const res = db.prepare('DELETE FROM bots WHERE id = ?').run(id);
+  return Number(res.changes) > 0;
 }
 
 // ==========================================

@@ -75,6 +75,20 @@ export const SYMBOL_SPECS: Record<SymbolName, SymbolSpec> = {
   },
 };
 
+/**
+ * Single authoritative pip value calculation derived exclusively from SYMBOL_SPECS.
+ * For USD base or quote, or Gold: returns pipValuePerLotUSD from SYMBOL_SPECS.
+ * For USDJPY: computes exact dynamic pip value based on the current market price.
+ */
+export function calculatePipValue(symbol: SymbolName, currentPrice?: number): number {
+  const spec = SYMBOL_SPECS[symbol];
+  if (!spec) return 10.0;
+  if (symbol === 'USDJPY' && currentPrice && currentPrice > 0) {
+    return (spec.contractSize * spec.point) / currentPrice;
+  }
+  return spec.pipValuePerLotUSD;
+}
+
 // Seeded pseudo-random generator for reproducible deterministic datasets
 function createPRNG(seed: number) {
   let s = seed % 2147483647;

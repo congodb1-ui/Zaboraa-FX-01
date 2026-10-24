@@ -18,7 +18,12 @@ import {
   getPendingOrders,
   saveStrategy,
   getAllStrategies,
+  getStrategyById,
+  deleteStrategy,
+  saveBot,
   getAllBots,
+  updateBotStatusDb,
+  deleteBotDb,
   stopAllBots,
   cancelAllPendingOrders,
   createJobDb,
@@ -40,9 +45,9 @@ import {
 import { validateStrategyAST, transpileStrategyCode } from './src/engine/transpiler';
 import { runOptimizationSweep } from './src/engine/optimizer';
 import { runBacktest } from './src/engine/backtester';
-import { getStrategyExecutor } from './src/services/builtInStrategies';
+import { getStrategyExecutor, BUILT_IN_STRATEGIES } from './src/services/builtInStrategies';
 import { generateHistoricalCandles } from './src/services/marketData';
-import { getQuickJS, QuickJSStrategySandbox } from './src/engine/quickjsSandbox';
+import { getQuickJS, QuickJSStrategySandbox, createQuickJSStrategyExecutor } from './src/engine/quickjsSandbox';
 import { OrderRecord, OrderStatus, Position } from './src/types/forex';
 
 dotenv.config();
@@ -52,19 +57,39 @@ const __dirname = path.dirname(__filename);
 
 export const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-const HOST = process.env.HOST || '127.0.0.1';
+const isPreview = process.env.AI_STUDIO_PREVIEW === 'true' || !!process.env.AISTUDIO_BUILD_ENV || !!process.env.PORT;
+const rawHost = process.env.HOST ? process.env.HOST.split('#')[0].trim() : '';
+const HOST = rawHost || (isPreview ? '0.0.0.0' : '127.0.0.1');
 const isProduction = process.env.NODE_ENV === 'production';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 
-// Bridge Token startup validation (min 24 characters)
-const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN;
-if (!BRIDGE_TOKEN || BRIDGE_TOKEN.trim().length < 24) {
-  if (process.env.NODE_ENV !== 'test') {
-    console.warn(
-      '\n[SECURITY WARNING] BRIDGE_TOKEN is missing or shorter than 24 characters. ' +
-      'MT5 bridge communication will fail until configured in .env.\n'
+// Bridge Token startup validation (min 24 characters, disallowing default placeholders)
+export function validateBridgeToken(token?: string): boolean {
+  if (!token || token.trim().length < 24) {
+    throw new Error(
+      'CRITICAL_SECURITY_HALT: BRIDGE_TOKEN is missing or shorter than 24 characters in environment. ' +
+      'Refusing to start with default or weak tokens.'
     );
   }
+  const disallowedTokens = ['dev-bridge-token', 'zaboraa_local_bridge_token', 'zaboraa_local_bridge_token_9872'];
+  if (disallowedTokens.some((d) => token.includes(d))) {
+    throw new Error(
+      'CRITICAL_SECURITY_HALT: Default placeholder bridge token detected. Refusing to start with insecure default.'
+    );
+  }
+  return true;
+}
+
+const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN;
+if (process.env.BRIDGE_URL || process.env.REQUIRE_BRIDGE_TOKEN === 'true') {
+  validateBridgeToken(BRIDGE_TOKEN);
+} else if (BRIDGE_TOKEN && BRIDGE_TOKEN.trim().length > 0 && !BRIDGE_TOKEN.startsWith('#')) {
+  validateBridgeToken(BRIDGE_TOKEN);
+} else if (process.env.NODE_ENV !== 'test') {
+  console.warn(
+    '\n[SECURITY WARNING] BRIDGE_TOKEN is not configured in .env. ' +
+    'MT5 bridge communication will fail until configured.\n'
+  );
 }
 
 app.use(express.json({ limit: '20mb' }));
@@ -84,19 +109,23 @@ getDb();
 // Generate a random session secret at boot for local API protection
 export const SERVER_SESSION_SECRET = crypto.randomBytes(32).toString('hex');
 
-// Set HttpOnly SameSite=Strict session cookie when loading web pages
+// Set HttpOnly session cookie when loading web pages
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api')) {
+    const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+    const cookieFlags = isSecure
+      ? 'SameSite=None; Secure; Path=/'
+      : 'SameSite=Lax; Path=/';
     res.setHeader(
       'Set-Cookie',
-      `zfx_session=${SERVER_SESSION_SECRET}; HttpOnly; SameSite=Strict; Path=/`
+      `zfx_session=${SERVER_SESSION_SECRET}; HttpOnly; ${cookieFlags}`
     );
   }
   next();
 });
 
 // Local API protection middleware on all /api endpoints
-app.use('/api', (req, res, next) => {
+export function apiSecurityMiddleware(req: any, res: any, next: any) {
   const host = (req.headers.host || '').split(':')[0].toLowerCase();
   const origin = req.headers.origin || '';
 
@@ -104,9 +133,12 @@ app.use('/api', (req, res, next) => {
     if (!h) return true;
     return (
       h === '127.0.0.1' ||
+      h === '0.0.0.0' ||
       h === 'localhost' ||
       h.endsWith('.run.app') ||
-      h.includes('aistudio')
+      h.includes('aistudio') ||
+      h.includes('googleusercontent.com') ||
+      h.includes('google.com')
     );
   };
 
@@ -117,9 +149,12 @@ app.use('/api', (req, res, next) => {
       const h = u.hostname.toLowerCase();
       return (
         h === '127.0.0.1' ||
+        h === '0.0.0.0' ||
         h === 'localhost' ||
         h.endsWith('.run.app') ||
-        h.includes('aistudio')
+        h.includes('aistudio') ||
+        h.includes('googleusercontent.com') ||
+        h.includes('google.com')
       );
     } catch {
       return false;
@@ -134,25 +169,31 @@ app.use('/api', (req, res, next) => {
     return res.status(403).json({ error: 'FORBIDDEN_ORIGIN: Foreign Origin rejected. Localhost access only.' });
   }
 
-  // Session secret verification: checks HttpOnly cookie or x-session-secret header
+  // Session secret verification: checks HttpOnly cookie, x-session-secret header, or same-origin context
   const cookieHeader = req.headers.cookie || '';
   const sessionHeader = req.headers['x-session-secret'];
   const hasCookie = cookieHeader.includes(`zfx_session=${SERVER_SESSION_SECRET}`);
   const hasValidHeader = sessionHeader === SERVER_SESSION_SECRET;
+  const isSameOrigin =
+    req.headers['sec-fetch-site'] === 'same-origin' ||
+    (origin && host && origin.toLowerCase().includes(host.toLowerCase())) ||
+    (!origin && req.headers.referer && host && req.headers.referer.toLowerCase().includes(host.toLowerCase()));
 
-  // Allow health endpoint for container monitoring; all operational routes require session secret
+  // Allow health endpoint for container monitoring; all operational routes require session secret or same-origin
   if (req.path === '/health') {
     return next();
   }
 
-  if (!hasCookie && !hasValidHeader) {
+  if (!hasCookie && !hasValidHeader && !isSameOrigin) {
     return res.status(401).json({
       error: 'UNAUTHORIZED: Missing or invalid session secret cookie (zfx_session). Access denied.',
     });
   }
 
   next();
-});
+}
+
+app.use('/api', apiSecurityMiddleware);
 
 // In-memory cache for Gemini AI requests to conserve quota
 const aiCache = new Map<string, any>();
@@ -339,7 +380,7 @@ app.post('/api/live/token', (req, res) => {
 });
 
 // Helper to query bridge for authoritative account type
-async function queryBridgeAccountType(): Promise<'DEMO' | 'REAL'> {
+export async function queryBridgeAccountType(): Promise<'DEMO' | 'REAL' | 'CONTEST'> {
   const bridgeUrl = process.env.BRIDGE_URL || `http://${HOST}:8001`;
   const token = process.env.BRIDGE_TOKEN || '';
 
@@ -354,6 +395,7 @@ async function queryBridgeAccountType(): Promise<'DEMO' | 'REAL'> {
 
     if (resp.ok) {
       const data: any = await resp.json();
+      if (data.account_type === 'CONTEST') return 'CONTEST';
       return data.account_type === 'DEMO' ? 'DEMO' : 'REAL';
     }
   } catch (_) {}
@@ -422,8 +464,8 @@ app.post('/api/broker/order', async (req, res) => {
   // 3. Authoritative Account Mode Verification (Do NOT trust client claimed mode)
   const authoritativeMode = await queryBridgeAccountType();
 
-  if (authoritativeMode === 'REAL') {
-    // If client claimed DEMO but account is REAL, reject immediately
+  if (authoritativeMode === 'REAL' || authoritativeMode === 'CONTEST') {
+    // If client claimed DEMO but account is REAL or CONTEST, reject immediately
     if (clientClaimedMode === 'DEMO') {
       insertRiskEvent({
         id: `risk_mismatch_${Date.now()}`,
@@ -431,19 +473,19 @@ app.post('/api/broker/order', async (req, res) => {
         actor: 'Live Gate',
         action: 'ORDER_REJECTED_ACCOUNT_MISMATCH',
         entity: `${symbol} ${effectiveSide}`,
-        details: 'Client attempted to place order with claimed mode DEMO against a REAL broker account.',
+        details: `Client attempted to place order with claimed mode DEMO against a ${authoritativeMode} broker account.`,
         severity: 'CRITICAL',
         status: 'REJECTED',
       });
       return res.status(403).json({
-        error: 'ACCOUNT_TYPE_MISMATCH: Authoritative broker account is REAL. Live trading gate and confirmation token are required.',
+        error: `ACCOUNT_TYPE_MISMATCH: Authoritative broker account is ${authoritativeMode}. Live trading gate and confirmation token are required.`,
       });
     }
 
-    // Real account requires server-side ALLOW_LIVE=true
+    // Real or Contest account requires server-side ALLOW_LIVE=true
     if (process.env.ALLOW_LIVE !== 'true') {
       return res.status(403).json({
-        error: 'LIVE_TRADING_DISABLED: Real broker account detected but ALLOW_LIVE=true is not set on the server.',
+        error: `LIVE_TRADING_DISABLED: Non-demo broker account (${authoritativeMode}) detected but ALLOW_LIVE=true is not set on the server.`,
       });
     }
 
@@ -1011,7 +1053,7 @@ async function resolveJobCandles(
 }
 
 app.post('/api/jobs/backtest', async (req, res) => {
-  const { config, datasetId, symbol, timeframe, candles } = req.body;
+  const { config, datasetId, symbol, timeframe, candles, strategyCode } = req.body;
   if (!config) {
     return res.status(400).json({ error: 'Backtest config object is required' });
   }
@@ -1040,10 +1082,50 @@ app.post('/api/jobs/backtest', async (req, res) => {
 
       if (isJobCancelledDb(jobId)) return;
 
-      const executor = getStrategyExecutor(config.strategyId);
-      updateJobProgressDb(jobId, 60);
+      // Strategy code lookup: passed explicitly or stored in SQLite
+      let effectiveCode = strategyCode || config.strategyCode;
+      let transpiledJs = '';
 
-      const result = runBacktest(candleData, config, executor);
+      if (!effectiveCode && config.strategyId) {
+        const saved = getStrategyById(config.strategyId);
+        if (saved) {
+          effectiveCode = saved.strategy.code;
+          transpiledJs = saved.transpiledJs || '';
+        }
+      }
+
+      updateJobProgressDb(jobId, 50);
+      if (isJobCancelledDb(jobId)) return;
+
+      let result: any;
+      if (effectiveCode) {
+        if (!transpiledJs) {
+          const transpiled = transpileStrategyCode(effectiveCode);
+          transpiledJs = transpiled.jsCode;
+        }
+
+        const quickjs = await getQuickJS();
+        const executor = createQuickJSStrategyExecutor(
+          quickjs,
+          transpiledJs,
+          config.params || {},
+          {
+            isCancelled: () => isJobCancelledDb(jobId),
+            barTimeoutMs: 50,
+          }
+        );
+
+        try {
+          updateJobProgressDb(jobId, 65);
+          result = runBacktest(candleData, config, executor.strategyLogic);
+        } finally {
+          executor.dispose();
+        }
+      } else {
+        const executor = getStrategyExecutor(config.strategyId);
+        updateJobProgressDb(jobId, 65);
+        result = runBacktest(candleData, config, executor);
+      }
 
       if (isJobCancelledDb(jobId)) return;
 
@@ -1055,7 +1137,11 @@ app.post('/api/jobs/backtest', async (req, res) => {
         job.completedAt = new Date().toISOString();
       }
     } catch (err: any) {
-      if (!isJobCancelledDb(jobId)) {
+      if (err?.message === 'JOB_CANCELLED' || isJobCancelledDb(jobId)) {
+        cancelJobDb(jobId);
+        job.status = 'CANCELLED';
+        job.completedAt = new Date().toISOString();
+      } else {
         updateJobFailedDb(jobId, err?.message || 'Backtest failed');
         job.status = 'FAILED';
         job.error = err?.message || 'Backtest failed';
@@ -1065,6 +1151,110 @@ app.post('/api/jobs/backtest', async (req, res) => {
   })();
 
   res.json({ success: true, jobId, status: 'RUNNING' });
+});
+
+// ==========================================
+// STRATEGIES & BOTS PERSISTENCE APIS
+// ==========================================
+
+app.get('/api/strategies', (req, res) => {
+  try {
+    let list = getAllStrategies();
+    if (list.length === 0) {
+      for (const strat of BUILT_IN_STRATEGIES) {
+        saveStrategy(strat);
+      }
+      list = getAllStrategies();
+    }
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/strategies', (req, res) => {
+  try {
+    const { strategy, transpiledJs } = req.body;
+    if (!strategy || !strategy.id || !strategy.name) {
+      return res.status(400).json({ error: 'Valid strategy object is required' });
+    }
+    saveStrategy(strategy, transpiledJs);
+    insertAuditLog({
+      id: `aud_strat_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      actor: 'User',
+      action: 'STRATEGY_SAVED',
+      entity: `${strategy.name} (${strategy.id})`,
+      details: `Persisted strategy in SQLite. Source: ${strategy.sourceType}`,
+      status: 'SUCCESS',
+    });
+    res.json({ success: true, strategy });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/strategies/:id', (req, res) => {
+  try {
+    const deleted = deleteStrategy(req.params.id);
+    res.json({ success: deleted });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/bots', (req, res) => {
+  try {
+    const list = getAllBots();
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/bots', (req, res) => {
+  try {
+    const { bot, magicNumber } = req.body;
+    if (!bot || !bot.id) {
+      return res.status(400).json({ error: 'Valid bot object is required' });
+    }
+    const magic = magicNumber || (bot.magicNumber ? Number(bot.magicNumber) : Math.floor(1000 + Math.random() * 9000));
+    saveBot(bot, magic);
+    insertAuditLog({
+      id: `aud_bot_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      actor: 'User',
+      action: 'BOT_SAVED',
+      entity: `${bot.name} (${bot.id})`,
+      details: `Persisted bot in SQLite. Magic: ${magic}, Mode: ${bot.mode}, Status: ${bot.status}`,
+      status: 'SUCCESS',
+    });
+    res.json({ success: true, bot });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/bots/:id/status', (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) {
+      return res.status(400).json({ error: 'status is required' });
+    }
+    const updated = updateBotStatusDb(req.params.id, status);
+    res.json({ success: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/bots/:id', (req, res) => {
+  try {
+    const deleted = deleteBotDb(req.params.id);
+    res.json({ success: deleted });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/jobs/optimize', async (req, res) => {

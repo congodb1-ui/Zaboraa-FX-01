@@ -7,7 +7,7 @@ import {
   MonteCarloConfidence,
   SymbolName,
 } from '../types/forex';
-import { SYMBOL_SPECS } from '../services/marketData';
+import { SYMBOL_SPECS, calculatePipValue } from '../services/marketData';
 
 interface PositionState {
   ticket: number;
@@ -55,16 +55,6 @@ export function runBacktest(
   let totalCommission = 0;
   let totalSwap = 0;
   let totalSlippageCost = 0;
-
-  // Single authoritative pip value from SymbolSpec
-  const calculatePipValue = (symbol: SymbolName, currentPrice: number) => {
-    const s = SYMBOL_SPECS[symbol];
-    if (!s) return 10.0;
-    if (symbol === 'USDJPY') {
-      return (s.contractSize * s.point) / currentPrice;
-    }
-    return s.pipValuePerLotUSD;
-  };
 
   const pipSize = spec.point * (spec.digits === 3 || spec.digits === 5 ? 10 : 1);
 

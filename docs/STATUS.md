@@ -5,7 +5,7 @@ In accordance with Ground Rule 3 and Stage 0/1 requirements:
 - **Never mark something as implemented unless an automated unit/integration test or verified live bridge execution proves it.**
 - When no bridge is connected, all operational features run in simulated mode with explicit labels.
 
-*Last Updated*: Stage 2 (One Real Strategy Execution Path & Safety Architecture)
+*Last Updated*: Stage 3A Completed (Bridge Client, 4-State Order Lifecycle, Closed-Bar Idempotency)
 
 ---
 
@@ -49,6 +49,20 @@ Items in this table have automated unit/integration tests running in the test su
 | **Cancellable Optimization Sweep**| Cancellation flag stops grid sweep early | `src/engine/__tests__/strategyExecution.test.ts` | Pass | SQLite prevents overwriting CANCELLED jobs with COMPLETED |
 | **Persistent SQLite AI Cache** | SHA-256 prompt-keyed `ai_cache` in SQLite | `src/engine/__tests__/strategyExecution.test.ts` | Pass | Deterministic storage & retrieval of AI results |
 | **Wednesday Triple-Swap Accrual**| 3x swap multiplier on Wednesday rollover | `src/engine/__tests__/strategyExecution.test.ts` | Pass | Standard -3.20/lot scales to -9.60 on Wednesday |
+| **Bridge Token Strong Validation**| Rejects short (<24 char) and default tokens | `src/engine/__tests__/safety.test.ts` | Pass | Default placeholders `dev-bridge-token` and `zaboraa_local_bridge_token_9872` blocked |
+| **Authoritative Account Verification**| Inspects bridge `/account` for DEMO vs REAL/CONTEST | `src/engine/__tests__/safety.test.ts` | Pass | Mismatched client mode rejected with `ACCOUNT_TYPE_MISMATCH` |
+| **Local API Host & Origin Firewall**| Rejects foreign `Host` and `Origin` headers | `src/engine/__tests__/safety.test.ts` | Pass | HTTP 403 `FORBIDDEN_HOST` and `FORBIDDEN_ORIGIN` |
+| **Pip Value Canonical Math** | Single source of truth with USDJPY quote conversion | `src/engine/__tests__/strategyExecution.test.ts` | Pass | Unified in `src/services/marketData.ts` |
+| **Strategies & Bots SQLite Persistence**| Full CRUD persistence across server restarts | `src/engine/__tests__/strategyExecution.test.ts` | Pass | Verified in SQLite `strategies` and `bots` tables |
+| **QuickJS Context Immutability**| Dynamic balance, equity, and frozen positions per bar | `src/engine/__tests__/strategyExecution.test.ts` | Pass | Prevents strategy tampering with engine context |
+| **Typed MT5 Bridge Client** | Strongly-typed client for all MT5 bridge endpoints | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Verified with `/health`, `/account`, `/positions`, `/orders`, `/kill` |
+| **Bridge Exponential Backoff** | 3 retries with backoff & jitter on transient 5xx/network errors | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Recovers after transient glitch, exhausts on persistent failure |
+| **Bridge Fast-Fail Discipline**| Immediate termination with zero retries on 401, 403, and 400 | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Prevents hammering unauthorized or forbidden endpoints |
+| **Bridge Timeout Abort** | AbortController triggers `BRIDGE_TIMEOUT` (408) on hung requests | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Bounded by configurable `timeoutMs` |
+| **Closed-Bar Idempotency Math**| Deterministic SHA-256 `${botId}:${symbol}:${timeframe}:${barTimestamp}:${direction}` | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Strictly prevents duplicate order execution on same bar |
+| **4-State Order Lifecycle** | `PENDING_BROKER` -> `SENT` -> `FILLED` / `REJECTED` / `UNKNOWN` | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Full SQLite state machine transitions with error reasons & audit logs |
+| **Live Gate Confirmation Token** | Single-use token with atomic CAS in SQLite | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Token consumed upon execution, prevents replay |
+| **End-to-End Bridge Routing** | Coordinated SQLite state machine and BridgeClient execution | `src/engine/__tests__/bridgeClient.test.ts` | Pass | Transitions orders to FILLED on success, REJECTED on 4xx, UNKNOWN on timeout |
 
 ---
 
@@ -59,7 +73,6 @@ Items in this table exist in the codebase but have not yet been verified against
 | Feature / Component | Current Implementation | Reason Untested / Simulated | Target Phase for Testing |
 | :--- | :--- | :--- | :--- |
 | **Live MT5 Windows IPC** | Exness MetaTrader 5 live terminal | Requires running Windows terminal; simulated in Linux container | Manual verification checklist on Windows |
-| **Live Gate Confirmation Token** | Single-use token with CAS in SQLite | Token endpoint implemented and checked in order flow | Stage 3 (full bot runner live gate) |
 | **Partitioned Candle Storage** | Year-partitioned JSON/SQLite storage | Storage functions implemented in `candleStorage.ts` | Stage 3 (dataset manager live import) |
 | **Browser UI Views** | Dashboard, Markets, Positions, Bots | Uses simulated demo account when bridge offline | Stage 4 (remove fake data & enforce badges) |
 
@@ -71,8 +84,9 @@ Features defined in the master specification scheduled for upcoming stages.
 
 | Stage | Feature Area | Description |
 | :--- | :--- | :--- |
-| **Stage 3** | **Live Execution & Reconciliation**| Typed `bridgeClient.ts`; 4-state order lifecycle (`PENDING_BROKER` -> `SENT` -> `FILLED` / `REJECTED` / `UNKNOWN`); closed-bar idempotency key; deals/positions startup reconciliation; server-side bot runner with persistent interval scheduling; risk manager firewall (daily max loss, per-trade risk); bridge heartbeat watchdog. |
+| **Stage 3B** | **Bot Runner & Watchdog** | Server-side bot runner with persistent interval scheduling; bridge heartbeat watchdog with auto-pause; risk manager firewall (daily max loss, max drawdown, per-trade risk). |
 | **Stage 4** | **Remove Fake Data** | Purge hardcoded mock positions and random price simulator; require explicit "SIMULATION: no broker connected" banner across UI. |
 | **Stage 5** | **Fundamental Data Module** | SQLite `macro_series`, `calendar_events`, `cot_reports`; FRED API fetcher; Forex Factory calendar feed; CFTC COT reports; news blackout rule; currency bias score. |
 | **Stage 6** | **Market Structure & Positioning**| Swing detection, BOS, CHoCH, Fair Value Gaps, Order Blocks, Liquidity Sweeps; currency strength meter; positioning analysis; signal study tool. |
+
 

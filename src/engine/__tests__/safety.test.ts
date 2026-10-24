@@ -10,8 +10,8 @@ import {
   _resetMasterKeyForTest,
   hashContent,
 } from '../../services/crypto';
+import { executeKillSwitchOperation, app, SERVER_SESSION_SECRET, validateBridgeToken, queryBridgeAccountType, apiSecurityMiddleware } from '../../../server';
 import { getOrSetPerInstallSalt, setNoNewOrdersFlag, getNoNewOrdersFlag } from '../../services/db';
-import { executeKillSwitchOperation, app, SERVER_SESSION_SECRET } from '../../../server';
 
 describe('Safety & Sandbox Isolation Tests', () => {
   let QuickJS: any;
@@ -382,25 +382,78 @@ describe('Safety & Sandbox Isolation Tests', () => {
 
   describe('Local API Protection & Live Gate', () => {
     it('Requires session secret or cookie for protected /api endpoints', async () => {
-      // Simulate Express request without cookie or header
-      const req: any = { headers: {}, path: '/broker/order' };
-      const res: any = {
-        statusCode: 200,
-        status(code: number) { this.statusCode = code; return this; },
-        json(data: any) { this.body = data; return this; },
-      };
-      let nextCalled = false;
-
-      // Find the /api security middleware in app._router.stack
-      const apiLayer = (app as any)._router?.stack.find((s: any) => s.name === 'router' || s.handle?.name === '');
       expect(SERVER_SESSION_SECRET.length).toBe(64);
     });
 
     it('Mandatory Stop-Loss: rejects order when sl <= 0 or missing', () => {
-      // Direct validation
       const slZero = 0;
       const isInvalid = !slZero || typeof slZero !== 'number' || slZero <= 0;
       expect(isInvalid).toBe(true);
+    });
+
+    it('validateBridgeToken refuses missing, short (<24 chars), or default placeholder tokens', () => {
+      // 1. Missing token
+      expect(() => validateBridgeToken(undefined)).toThrowError(/missing or shorter than 24 characters/);
+      expect(() => validateBridgeToken('')).toThrowError(/missing or shorter than 24 characters/);
+
+      // 2. Short token (< 24 chars)
+      expect(() => validateBridgeToken('short_token_123')).toThrowError(/missing or shorter than 24 characters/);
+
+      // 3. Known default placeholder tokens
+      expect(() => validateBridgeToken('dev-bridge-token-long-enough-now-1234')).toThrowError(/Default placeholder bridge token detected/);
+      expect(() => validateBridgeToken('zaboraa_local_bridge_token_9872')).toThrowError(/Default placeholder bridge token detected/);
+
+      // 4. Valid strong token (>= 24 chars)
+      expect(validateBridgeToken('my_secure_custom_production_bridge_token_9921_safe')).toBe(true);
+    });
+
+    it('queryBridgeAccountType recognizes REAL and CONTEST accounts and treats non-demo as live', async () => {
+      const originalFetch = global.fetch;
+      try {
+        global.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ account_type: 'CONTEST' }),
+        } as any);
+
+        const mode = await queryBridgeAccountType();
+        expect(mode).toBe('CONTEST');
+
+        // Non-demo authoritative accounts must never be treated as DEMO
+        expect(mode === 'DEMO').toBe(false);
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+    it('Local API security rejects foreign Host and foreign Origin headers', () => {
+      // 1. Foreign Host header
+      let foreignHostStatus = 200;
+      let foreignHostBody: any = null;
+      apiSecurityMiddleware(
+        { headers: { host: 'attacker.evil.com' }, path: '/broker/status' },
+        {
+          status(code: number) { foreignHostStatus = code; return this; },
+          json(data: any) { foreignHostBody = data; return this; },
+        },
+        () => {}
+      );
+      expect(foreignHostStatus).toBe(403);
+      expect(foreignHostBody.error).toContain('FORBIDDEN_HOST');
+
+      // 2. Foreign Origin header
+      let foreignOriginStatus = 200;
+      let foreignOriginBody: any = null;
+      apiSecurityMiddleware(
+        { headers: { host: '127.0.0.1', origin: 'https://evil-phishing.org' }, path: '/broker/status' },
+        {
+          status(code: number) { foreignOriginStatus = code; return this; },
+          json(data: any) { foreignOriginBody = data; return this; },
+        },
+        () => {}
+      );
+      expect(foreignOriginStatus).toBe(403);
+      expect(foreignOriginBody.error).toContain('FORBIDDEN_ORIGIN');
     });
   });
 });

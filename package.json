@@ -1,3 +1,4 @@
+$jsonContent = @'
 {
   "name": "zaboraa-fx",
   "private": true,
@@ -36,9 +37,11 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.2",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
   }
 }
+'@
+[System.IO.File]::WriteAllText("$PWD\package.json", $jsonContent, (New-Object System.Text.UTF8Encoding $false))
